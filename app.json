@@ -1,0 +1,60 @@
+{
+  "expo": {
+    "name": "StrictlyNFC Owner",
+    "slug": "strictlynfc-owner",
+    "version": "1.0.0",
+    "description": "Invite-only tools for Strictly partner gyms to manage equipment, program NFC tags, and view floor activity.",
+    "orientation": "portrait",
+    "scheme": "strictlynfcowner",
+    "icon": "./assets/strictly-app-icon.png",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.strictlyinc.nfcowner",
+      "infoPlist": {
+        "NFCReaderUsageDescription": "Strictly uses NFC to program and verify your gym's machine tags."
+      },
+      "entitlements": {
+        "com.apple.developer.nfc.readersession.formats": [
+          "NDEF"
+        ]
+      }
+    },
+    "android": {
+      "package": "com.strictlyinc.nfcowner",
+      "permissions": [
+        "android.permission.NFC"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/strictly-app-icon.png",
+        "backgroundColor": "#071D12"
+      }
+    },
+    "plugins": [
+      [
+        "react-native-nfc-manager",
+        {
+          "nfcPermission": "Strictly uses NFC to program and verify your gym's machine tags."
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/strictly-mark-transparent.png",
+          "imageWidth": 180,
+          "resizeMode": "contain",
+          "backgroundColor": "#071D12",
+          "dark": {
+            "image": "./assets/strictly-mark-transparent.png",
+            "backgroundColor": "#071D12"
+          }
+        }
+      ],
+      "./plugins/withOptionalNfc"
+    ],
+    "extra": {
+      "supabaseUrl": "https://owedpojalgtkiuthptft.supabase.co",
+      "supabasePublishableKey": "sb_publishable_7FLJBomC7TcEGCbTMPPn8Q_U0aj_zVG",
+      "ownerApiUrl": "https://strictlyinc.com"
+    }
+  }
+}
