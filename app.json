@@ -17,7 +17,8 @@
         "com.apple.developer.nfc.readersession.formats": [
           "NDEF"
         ]
-      }
+      },
+      "appleTeamId": "67A2H77882"
     },
     "android": {
       "package": "com.strictlyinc.nfcowner",
