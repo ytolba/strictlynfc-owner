@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  ActivityIndicator, Image, KeyboardAvoidingView, Linking, Platform, Pressable, RefreshControl,
+  ActivityIndicator, Alert, Image, KeyboardAvoidingView, Linking, Platform, Pressable, RefreshControl,
   ScrollView, StyleSheet, Text, View, type ImageStyle
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -20,8 +20,9 @@ import { colors, fonts } from './src/theme';
 import type { DashboardData, Machine, MachineDraft, MachineTag, OwnerRole, ProvisioningDraft } from './src/types';
 import { Button, Card, Chip, Eyebrow, Field, Notice, SectionTitle } from './src/ui';
 import { MemberApp } from './src/member/MemberApp';
-import { machineLinkFromUrl } from './src/member/api';
+import { deleteMemberAccount, machineLinkFromUrl } from './src/member/api';
 import { ensureMemberSession } from './src/member/session';
+import { clearMemberData } from './src/member/storage';
 
 type Tab = 'dashboard' | 'machines' | 'setup' | 'account';
 type AppMode = 'member' | 'owner';
@@ -391,13 +392,26 @@ function SetupScreen({ session, data, onChanged }: { session: Session; data: Das
 }
 
 function AccountScreen({ session, data, onGymChange, onSwitchMember }: { session: Session; data: DashboardData; onGymChange: (id: string) => void; onSwitchMember: () => void }) {
-  const [email, setEmail] = useState(''); const [role, setRole] = useState<OwnerRole>('manager'); const [busy, setBusy] = useState(false); const [message, setMessage] = useState('');
+  const [email, setEmail] = useState(''); const [role, setRole] = useState<OwnerRole>('manager'); const [busy, setBusy] = useState(false); const [accountBusy, setAccountBusy] = useState(false); const [message, setMessage] = useState('');
   const sendInvite = async () => {
     setBusy(true); setMessage('');
     try { const result = await inviteOwner(session, data.gym.id, email.trim(), role); setMessage(result.message || 'Invitation sent.'); setEmail(''); }
     catch (reason) { setMessage(reason instanceof Error ? reason.message : 'Invitation could not be sent.'); }
     setBusy(false);
   };
+  const deleteAccount = () => Alert.alert('Delete your account?', 'This permanently removes your StrictlyVision account, gym access, and personal workout history. This cannot be undone.', [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Delete account', style: 'destructive', onPress: async () => {
+      setAccountBusy(true);
+      try {
+        await deleteMemberAccount(session);
+        await clearMemberData();
+        await supabase.auth.signOut();
+        Alert.alert('Account deleted', 'Your StrictlyVision account and associated access were removed.');
+      } catch (reason) { Alert.alert('Could not delete account', reason instanceof Error ? reason.message : 'Please try again.'); }
+      setAccountBusy(false);
+    } }
+  ]);
   return (
     <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
       <Eyebrow>Account</Eyebrow><Text style={styles.pageTitle}>Owner settings</Text>
@@ -407,6 +421,7 @@ function AccountScreen({ session, data, onGymChange, onSwitchMember }: { session
       <SectionTitle>Support & legal</SectionTitle><Card style={styles.gap12}><Button label="Email Strictly support" onPress={() => Linking.openURL('mailto:getstrictly@gmail.com?subject=StrictlyNFC%20Owner%20Support')} tone="secondary" /><Button label="Open web dashboard" onPress={() => Linking.openURL('https://strictlyinc.com/owner')} tone="secondary" /><Button label="Privacy policy" onPress={() => Linking.openURL('https://strictlyinc.com/privacy')} tone="secondary" /><Button label="Terms of service" onPress={() => Linking.openURL('https://strictlyinc.com/terms')} tone="secondary" /></Card>
       <Button label="Switch to member mode" onPress={onSwitchMember} tone="secondary" />
       <Button label="Sign out" onPress={() => supabase.auth.signOut()} tone="danger" />
+      <Button label="Delete account" onPress={deleteAccount} tone="danger" loading={accountBusy} disabled={accountBusy} />
     </ScrollView>
   );
 }
