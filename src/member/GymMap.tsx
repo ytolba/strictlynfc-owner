@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import Constants from 'expo-constants';
 import MapView, { Marker, type Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
@@ -7,6 +8,10 @@ import { colors, fonts, radius } from '../theme';
 import type { PartnerGym } from './types';
 
 export type Coords = { latitude: number; longitude: number };
+
+// Google Maps on Android crashes the app without an API key (app.json android.config.googleMaps.apiKey).
+// iOS uses Apple Maps and needs no key.
+const mapsAvailable = Platform.OS !== 'android' || !!Constants.expoConfig?.android?.config?.googleMaps?.apiKey;
 
 const MILES_PER_KM = 0.621371;
 export function distanceMiles(a: Coords, b: Coords) {
@@ -57,8 +62,8 @@ export function GymMap({ gyms, userLocation, onUserLocation, onSelectGym }: {
 
   return (
     <View>
-      <View style={styles.frame}>
-        <MapView
+      <View style={[styles.frame, !mapsAvailable && styles.frameCompact]}>
+        {mapsAvailable ? <MapView
           ref={map}
           style={StyleSheet.absoluteFill}
           initialRegion={regionFor(gyms.length ? gyms : [{ latitude: 47.6062, longitude: -122.3321 }])}
@@ -72,7 +77,13 @@ export function GymMap({ gyms, userLocation, onUserLocation, onSelectGym }: {
               <View style={[styles.pin, { backgroundColor: gym.accentColor, borderColor: gym.backgroundColor }]}><Ionicons name="barbell" size={16} color={gym.backgroundColor} /></View>
             </Marker>
           ))}
-        </MapView>
+        </MapView> : (
+          <View style={styles.noMap}>
+            <Ionicons name="location-outline" size={22} color={colors.lime} />
+            <Text style={styles.noMapTitle}>Find your nearest gym</Text>
+            <Text style={styles.noMapCopy}>Share your location to sort partner gyms by distance.</Text>
+          </View>
+        )}
         <Pressable accessibilityRole="button" accessibilityLabel="Use my location" onPress={locate} disabled={locating} style={({ pressed }) => [styles.locate, pressed && styles.pressed]}>
           {locating ? <ActivityIndicator color={colors.onLime} /> : <Ionicons name="navigate" size={16} color={colors.onLime} />}
           <Text style={styles.locateText}>{userLocation ? 'Update location' : 'Use my location'}</Text>
@@ -94,7 +105,11 @@ export function GymMap({ gyms, userLocation, onUserLocation, onSelectGym }: {
 }
 
 const styles = StyleSheet.create({
-  frame: { height: 300, borderRadius: radius.md, overflow: 'hidden', borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  frameCompact: { height: 184 },
+  noMap: { padding: 18, gap: 6 },
+  noMapTitle: { color: colors.text, fontFamily: fonts.semibold, fontSize: 17, marginTop: 4 },
+  noMapCopy: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13, lineHeight: 18, maxWidth: 230 },
+  frame: { height: 300,borderRadius: radius.md, overflow: 'hidden', borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
   pin: { width: 34, height: 34, borderRadius: 17, borderWidth: 3, alignItems: 'center', justifyContent: 'center' },
   locate: { position: 'absolute', right: 12, bottom: 12, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, borderRadius: radius.pill, backgroundColor: colors.lime },
   locateText: { color: colors.onLime, fontFamily: fonts.semibold, fontSize: 14 },
