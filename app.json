@@ -58,7 +58,8 @@
             "DEFAULT"
           ]
         }
-      ]
+      ],
+      "versionCode": 2
     },
     "plugins": [
       [
