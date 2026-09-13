@@ -1,5 +1,6 @@
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from '../supabase';
+import { newId } from './storage';
 import type { WorkoutSession } from './types';
 
 // Workouts are written straight to Supabase (RLS: members can only touch their own rows).
@@ -8,7 +9,7 @@ export async function saveWorkoutToCloud(session: Session | null, workout: Worko
   if (!session) return false;
   const exerciseCount = new Set(workout.sets.map((set) => `${set.publicId}:${set.exerciseSlug || ''}`)).size;
   const volume = workout.sets.reduce((sum, set) => sum + set.weight * set.reps, 0);
-  const { error } = await supabase.from('member_workouts').upsert({
+  const row = {
     id: workout.id,
     user_id: session.user.id,
     gym_slug: workout.gymId,
@@ -23,9 +24,17 @@ export async function saveWorkoutToCloud(session: Session | null, workout: Worko
     active_calories: workout.health?.activeCalories ?? null,
     health_source: workout.health?.source ?? null,
     sets: workout.sets.map(({ syncState, ...set }) => set)
-  });
-  if (error) throw new Error(error.message);
-  return true;
+  };
+  const { error } = await supabase.from('member_workouts').upsert(row);
+  if (!error) return true;
+  // 42501: this workout id was started under an earlier anonymous session, so RLS blocks updating it.
+  // Save the finished workout under a fresh id for the current member instead of retrying forever.
+  if (error.code === '42501' && workout.finishedAt) {
+    const retry = await supabase.from('member_workouts').insert({ ...row, id: newId() });
+    if (!retry.error) return true;
+    throw new Error(retry.error.message);
+  }
+  throw new Error(error.message);
 }
 
 export function workoutMinutes(workout: WorkoutSession) {

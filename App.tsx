@@ -21,6 +21,7 @@ import type { DashboardData, Machine, MachineDraft, MachineTag, OwnerRole, Provi
 import { Button, Card, Chip, Eyebrow, Field, Notice, SectionTitle } from './src/ui';
 import { MemberApp } from './src/member/MemberApp';
 import { machineLinkFromUrl } from './src/member/api';
+import { ensureMemberSession } from './src/member/session';
 
 type Tab = 'dashboard' | 'machines' | 'setup' | 'account';
 type AppMode = 'member' | 'owner';
@@ -63,10 +64,8 @@ export default function App() {
 
   const chooseMode = async (next: AppMode) => {
     setMode(next); await AsyncStorage.setItem(MODE_KEY, next);
-    if (next === 'member' && !session) {
-      const { error } = await supabase.auth.signInAnonymously();
-      if (error) console.warn('Anonymous member session unavailable; continuing with local workout storage.', error.message);
-    }
+    // Checks the live session, so the stale `session` captured by the link listener can't trigger extra sign-ins.
+    if (next === 'member') await ensureMemberSession();
   };
 
   return (

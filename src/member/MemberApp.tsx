@@ -17,6 +17,7 @@ import { supabase } from '../supabase';
 import { scanUrlFromTag } from '../nfc';
 import { deleteMemberAccount, exportMemberData, loadHistory, loadPartnerGyms, machineLinkFromUrl, recordSet, recordTap, resolveMachine } from './api';
 import { saveWorkoutToCloud, workoutMinutes } from './workouts';
+import { ensureMemberSession } from './session';
 import { GymMap, distanceMiles, formatMiles, type Coords } from './GymMap';
 import { MuscleMap } from './MuscleMap';
 import {
@@ -55,14 +56,14 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
     // Retry finished workouts that were saved on the phone while offline or signed out.
     if (session) await Promise.all(history.filter((item) => !item.cloudSynced).slice(0, 10).map(async (item) => {
       try { await saveWorkoutToCloud(session, item); await markWorkoutCloudSynced(item.id); item.cloudSynced = true; }
-      catch { /* Leave it for the next refresh. */ }
+      catch (reason) { console.warn('Workout cloud sync retry failed.', reason instanceof Error ? reason.message : reason); }
     }));
     setActiveWorkout(workout); setFinished(history); setRecent(machines); setPreferences(prefs); setGyms(partnerGyms);
   }, [session?.access_token, session?.user.id]);
 
   useEffect(() => { reload(); }, [reload]);
   // Guests need a Supabase session (anonymous sign-in) for cloud workout history and Strava.
-  useEffect(() => { if (!session) supabase.auth.signInAnonymously().catch(() => undefined); }, [session?.user.id]);
+  useEffect(() => { if (!session) ensureMemberSession().catch(() => undefined); }, [session?.user.id]);
   // Re-run on every tap (openedAt changes), not only when the station changes.
   useEffect(() => { if (initialLink) setMachineLink(initialLink); }, [initialLink?.publicId, initialLink?.exerciseSlug, initialLink?.openedAt]);
 
@@ -89,7 +90,7 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
     }
     const exports: string[] = [session ? 'Saved on this phone. It will sync to your account when you’re back online.' : 'Saved on this phone.'];
     try { if (await saveWorkoutToCloud(session, result)) { await markWorkoutCloudSynced(result.id); exports[0] = 'Saved to your workout history.'; } }
-    catch { /* Kept locally; reload() retries. */ }
+    catch (reason) { console.warn('Workout cloud save failed; kept on the phone for retry.', reason instanceof Error ? reason.message : reason); }
     if (preferences.healthKitEnabled) {
       try {
         const saved = await saveWorkoutToHealth(result);
