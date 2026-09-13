@@ -61,8 +61,9 @@ async function requestAppleHealth(kit: HealthKitModule) {
 }
 
 async function readAppleHealthStats(kit: HealthKitModule, session: Range): Promise<WorkoutHealthStats | null> {
-  // Safe to repeat: iOS only prompts for types the member hasn't answered yet.
-  await requestAppleHealth(kit).catch(() => undefined);
+  // Never trigger a permission sheet when a workout finishes. Authorization is requested only
+  // after the member explicitly taps Continue in Profile; queries simply return no data if access
+  // was later revoked in Apple Health.
   const candidates = await kit.queryWorkoutSamples({
     limit: 20,
     filter: { date: { startDate: new Date(session.startDate.getTime() - SESSION_PADDING_MS), endDate: new Date(session.endDate.getTime() + SESSION_PADDING_MS) } }

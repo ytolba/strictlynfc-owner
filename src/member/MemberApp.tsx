@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, BackHandler, KeyboardAvoidingView, Linking, Platform, Pressable, RefreshControl,
   ScrollView, Share, StyleSheet, Text, View
@@ -21,7 +21,7 @@ import { ensureMemberSession } from './session';
 import { GymMap, distanceMiles, formatMiles, type Coords } from './GymMap';
 import { MuscleMap } from './MuscleMap';
 import {
-  appendWorkoutSet, discardActiveWorkout, ensureActiveWorkout, finishActiveWorkout, loadActiveWorkout, loadFinishedWorkouts, loadPendingWorkoutSets, loadPreferences,
+  appendWorkoutSet, clearMemberData, discardActiveWorkout, ensureActiveWorkout, finishActiveWorkout, loadActiveWorkout, loadFinishedWorkouts, loadPendingWorkoutSets, loadPreferences,
   loadRecentMachines, markWorkoutCloudSynced, updateFinishedWorkout, markWorkoutSetSynced, newId, rememberMachine, replaceWorkoutSet, savePreferences
 } from './storage';
 import { healthProviderName, isHealthKitSupported, readWorkoutHealthStats, requestHealthKitAccess, saveWorkoutToHealth } from './health';
@@ -42,8 +42,10 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
   const [preferences, setPreferences] = useState<MemberPreferences>({ favoriteGymIds: [VAULT_GYM.id], weightUnit: 'lb' });
   const [gyms, setGyms] = useState<PartnerGym[]>([VAULT_GYM]);
   const [refreshing, setRefreshing] = useState(false);
+  const reloadSequence = useRef(0);
 
   const reload = useCallback(async () => {
+    const sequence = ++reloadSequence.current;
     const pending = await loadPendingWorkoutSets();
     const sessionId = session?.user.id || 'local-guest';
     await Promise.all(pending.map(async (set) => {
@@ -58,6 +60,9 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
       try { await saveWorkoutToCloud(session, item); await markWorkoutCloudSynced(item.id); item.cloudSynced = true; }
       catch (reason) { console.warn('Workout cloud sync retry failed.', reason instanceof Error ? reason.message : reason); }
     }));
+    // A session refresh and a saved set can overlap. Only the newest read may update the screen;
+    // the older result must not make a just-saved guest set appear to disappear.
+    if (sequence !== reloadSequence.current) return;
     setActiveWorkout(workout); setFinished(history); setRecent(machines); setPreferences(prefs); setGyms(partnerGyms);
   }, [session?.access_token, session?.user.id]);
 
@@ -124,7 +129,7 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
       preferences={preferences}
       onBack={() => setMachineLink(null)}
       onExercise={(exerciseSlug) => setMachineLink({ ...machineLink, exerciseSlug })}
-      onWorkoutChanged={reload}
+      onWorkoutChanged={(nextWorkout) => { if (nextWorkout) setActiveWorkout(nextWorkout); return reload(); }}
     />
   );
 
@@ -256,11 +261,14 @@ function ProfileScreen({ session, preferences, onPreferences, onSwitchOwner }: {
   const [accountBusy, setAccountBusy] = useState(false);
   const [strava, setStrava] = useState<{ connected: boolean; name?: string | null }>({ connected: false });
   const [connecting, setConnecting] = useState(false);
+  const [healthBusy, setHealthBusy] = useState(false);
   useEffect(() => { loadStravaConnection().then((tokens) => setStrava({ connected: !!tokens, name: tokens?.athleteName })); }, []);
   const toggleHealth = async () => {
     if (preferences.healthKitEnabled) return onPreferences({ ...preferences, healthKitEnabled: false });
+    setHealthBusy(true);
     try { await requestHealthKitAccess(); onPreferences({ ...preferences, healthKitEnabled: true }); }
     catch (reason) { Alert.alert(`${healthProviderName()} unavailable`, reason instanceof Error ? reason.message : 'Please try again.'); }
+    finally { setHealthBusy(false); }
   };
   const toggleStrava = async () => {
     if (strava.connected) {
@@ -285,15 +293,14 @@ function ProfileScreen({ session, preferences, onPreferences, onSwitchOwner }: {
     } catch (reason) { Alert.alert('Export unavailable', reason instanceof Error ? reason.message : 'Please try again.'); }
     setAccountBusy(false);
   };
-  const deleteAccount = () => Alert.alert('Delete your account?', 'This permanently removes your StrictlyVision profile and workout history. This cannot be undone.', [
+  const deleteAccount = () => Alert.alert(anonymous ? 'Delete guest profile?' : 'Delete your account?', anonymous ? 'This permanently removes the workouts saved by this guest profile from this phone and StrictlyVision. This cannot be undone.' : 'This permanently removes your StrictlyVision profile and workout history. This cannot be undone.', [
     { text: 'Cancel', style: 'cancel' },
-    { text: 'Delete account', style: 'destructive', onPress: async () => {
-      if (!session) return;
+    { text: anonymous ? 'Delete guest data' : 'Delete account', style: 'destructive', onPress: async () => {
       setAccountBusy(true);
       try {
-        await deleteMemberAccount(session);
-        await supabase.auth.signOut();
-        Alert.alert('Account deleted', 'Your StrictlyVision account and cloud workout history were removed.');
+        if (session) await deleteMemberAccount(session);
+        await Promise.all([clearMemberData(), disconnectStrava(), supabase.auth.signOut()]);
+        Alert.alert(anonymous ? 'Guest data deleted' : 'Account deleted', anonymous ? 'The guest profile and its workout history were removed.' : 'Your StrictlyVision account and cloud workout history were removed.');
       } catch (reason) { Alert.alert('Could not delete account', reason instanceof Error ? reason.message : 'Please try again.'); }
       setAccountBusy(false);
     } }
@@ -307,13 +314,14 @@ function ProfileScreen({ session, preferences, onPreferences, onSwitchOwner }: {
       <SettingRow icon="barbell-outline" title="Weight units" copy="Used throughout logs and progress"><View style={styles.segment}><Pressable onPress={() => onPreferences({ ...preferences, weightUnit: 'lb' })} style={[styles.segmentItem, preferences.weightUnit === 'lb' && styles.segmentActive]}><Text style={[styles.segmentText, preferences.weightUnit === 'lb' && styles.segmentTextActive]}>lb</Text></Pressable><Pressable onPress={() => onPreferences({ ...preferences, weightUnit: 'kg' })} style={[styles.segmentItem, preferences.weightUnit === 'kg' && styles.segmentActive]}><Text style={[styles.segmentText, preferences.weightUnit === 'kg' && styles.segmentTextActive]}>kg</Text></Pressable></View></SettingRow>
       <SettingRow icon="location-outline" title="Preferred gyms" copy={`${preferences.favoriteGymIds.length} selected`} />
       <SectionTitle>Connections</SectionTitle>
-      {isHealthKitSupported() ? <Pressable accessibilityRole="switch" accessibilityState={{ checked: !!preferences.healthKitEnabled }} onPress={toggleHealth}><SettingRow icon="heart-outline" title={healthProviderName()} copy={preferences.healthKitEnabled ? 'Heart rate and calories add to finished workouts' : 'Add heart rate and calories from your watch'}><Text style={[styles.connectText, preferences.healthKitEnabled && styles.connectTextOn]}>{preferences.healthKitEnabled ? 'On' : 'Connect'}</Text></SettingRow></Pressable> : null}
+      {isHealthKitSupported() ? <Pressable accessibilityRole="switch" accessibilityState={{ checked: !!preferences.healthKitEnabled, busy: healthBusy }} accessibilityLabel={`${healthProviderName()} workout sync`} accessibilityHint={preferences.healthKitEnabled ? 'Turns off future health data access inside StrictlyVision' : 'Continues to the system health permission request'} disabled={healthBusy} onPress={toggleHealth}><SettingRow icon="heart-outline" title={healthProviderName()} copy={preferences.healthKitEnabled ? 'Heart rate and active calories are added to finished workout history' : 'Optionally add workout time, heart rate, and active calories to your history'}>{healthBusy ? <ActivityIndicator color={colors.lime} /> : <Text style={[styles.connectText, preferences.healthKitEnabled && styles.connectTextOn]}>{preferences.healthKitEnabled ? 'On' : 'Continue'}</Text>}</SettingRow></Pressable> : null}
       <Pressable accessibilityRole="button" onPress={toggleStrava} disabled={connecting || (!strava.connected && !isStravaConfigured())}><SettingRow icon="bicycle-outline" title="Strava" copy={strava.connected ? `Connected${strava.name ? ` as ${strava.name}` : ''} · workouts upload when you finish` : isStravaConfigured() ? 'Upload finished workouts as Weight Training' : 'Coming soon'}>{connecting ? <ActivityIndicator color={colors.lime} /> : <Text style={[styles.connectText, strava.connected && styles.connectTextOn]}>{strava.connected ? 'On' : isStravaConfigured() ? 'Connect' : ''}</Text>}</SettingRow></Pressable>
       <SectionTitle>App</SectionTitle>
       <Pressable onPress={onSwitchOwner}><SettingRow icon="business-outline" title="Switch to owner tools" copy="Approved gym accounts only" chevron /></Pressable>
       <Pressable onPress={() => Linking.openURL('https://strictlyinc.com/privacy')}><SettingRow icon="shield-checkmark-outline" title="Privacy" chevron /></Pressable>
       {!anonymous ? <Pressable onPress={exportData} disabled={accountBusy}><SettingRow icon="download-outline" title="Export my data" chevron /></Pressable> : null}
-      {!anonymous ? <><Button label="Sign out" tone="secondary" onPress={() => supabase.auth.signOut()} disabled={accountBusy} /><Button label="Delete account" tone="danger" onPress={deleteAccount} disabled={accountBusy} /></> : null}
+      {!anonymous ? <Button label="Sign out" tone="secondary" onPress={() => supabase.auth.signOut()} disabled={accountBusy} /> : null}
+      <Button label={anonymous ? 'Delete guest data' : 'Delete account'} tone="danger" onPress={deleteAccount} disabled={accountBusy} loading={accountBusy} />
     </ScrollView>
   );
 }
@@ -366,7 +374,7 @@ function MemberAuthCard() {
   return <Card style={styles.authCard}><Text style={styles.authCardTitle}>Keep your progress</Text><Text style={styles.bodyMuted}>Create an account or sign in to use your history on another device.</Text>{Platform.OS === 'ios' ? <Button label="Continue with Apple" onPress={apple} tone="secondary" loading={busy} /> : null}<Button label="Continue with Google" onPress={google} tone="secondary" disabled={busy} /><View style={styles.divider}><View style={styles.dividerLine} /><Text style={styles.dividerText}>EMAIL</Text><View style={styles.dividerLine} /></View><Field label="Email" value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" autoComplete="email" placeholder="you@example.com" /><Field label="Password" value={password} onChangeText={setPassword} secureTextEntry autoComplete="password" placeholder="At least 8 characters" />{message ? <Notice tone={/check|signed in/i.test(message) ? 'success' : 'danger'}>{message}</Notice> : null}<Button label="Create account" onPress={create} loading={busy} disabled={!email.includes('@') || password.length < 8} /><Button label="Sign in to existing account" onPress={signIn} tone="secondary" disabled={busy || !email.includes('@') || !password} /></Card>;
 }
 
-function MachineScreen({ link, session, workout, preferences, onBack, onExercise, onWorkoutChanged }: { link: MachineLink; session: Session | null; workout: WorkoutSession | null; preferences: MemberPreferences; onBack: () => void; onExercise: (slug: string) => void; onWorkoutChanged: () => void }) {
+function MachineScreen({ link, session, workout, preferences, onBack, onExercise, onWorkoutChanged }: { link: MachineLink; session: Session | null; workout: WorkoutSession | null; preferences: MemberPreferences; onBack: () => void; onExercise: (slug: string) => void; onWorkoutChanged: (workout?: WorkoutSession) => Promise<void> }) {
   const [machine, setMachine] = useState<MemberMachine | null>(null); const [history, setHistory] = useState<MachineHistoryItem[]>([]); const [loading, setLoading] = useState(true); const [message, setMessage] = useState('');
   const [machineTab, setMachineTab] = useState<MachineTab>('log');
   const sessionId = session?.user.id || 'local-guest';
@@ -388,14 +396,14 @@ function MachineScreen({ link, session, workout, preferences, onBack, onExercise
   if (!machine) return <SafeAreaView style={[styles.safe, styles.screen]}><IconBack onPress={onBack} />{message ? <Notice tone="danger">{message}</Notice> : null}<Button label="Try again" onPress={load} /></SafeAreaView>;
   if (machine.stationType === 'multi_exercise' && !link.exerciseSlug) return <ExercisePicker machine={machine} onBack={onBack} onExercise={onExercise} />;
   const accent = machine.gymName === 'Vault Fitness Club' ? '#F2C44D' : colors.lime;
-  return <SafeAreaView edges={['top', 'left', 'right']} style={styles.safe}><ScrollView contentContainerStyle={styles.machineScreen} keyboardShouldPersistTaps="handled"><View style={styles.machineNav}><IconBack onPress={onBack} /><View style={[styles.gymChip, { borderColor: `${accent}88` }]}><View style={[styles.gymChipDot, { backgroundColor: accent }]} /><Text style={styles.gymChipText}>{machine.gymName}</Text></View></View>{workout ? <WorkoutTimerBar startedAt={workout.startedAt} gymName={workout.gymName} setCount={workout.sets.length} /> : null}<View><Text style={[styles.machineCategory, { color: accent }]}>{machine.category.toUpperCase()} · STATION {machine.stationCode}</Text><Text style={styles.machineTitle}>{machine.name}</Text>{machine.stationName ? <Text style={styles.bodyMuted}>{machine.stationName}</Text> : null}</View><MachineTabs tab={machineTab} onChange={setMachineTab} accent={accent} historyCount={history.length} />{machineTab === 'log' ? <SetLogger machine={machine} session={session} sessionId={sessionId} preferences={preferences} accent={accent} onSaved={async (item) => { setHistory((current) => [{ id: item.clientLogId, client_log_id: item.clientLogId, weight_lb: item.weight, reps: item.reps, seat_setting: item.seatSetting, notes: item.notes, occurred_at: item.createdAt }, ...current]); await onWorkoutChanged(); }} /> : machineTab === 'progress' ? <HistoryList history={history} unit={preferences.weightUnit} accent={accent} /> : <View style={styles.howTo}><MachineVideo url={machine.videoUrl} gymName={machine.gymName} accent={accent} /><View><SectionTitle>Steps</SectionTitle><View style={styles.instructions}>{machine.instructions.map((instruction, index) => <View key={`${instruction}-${index}`} style={styles.instruction}><View style={[styles.stepNumber, { backgroundColor: accent }]}><Text style={styles.stepNumberText}>{index + 1}</Text></View><Text style={styles.instructionText}>{instruction}</Text></View>)}</View></View><View><SectionTitle>Muscles worked</SectionTitle><MuscleMap primary={machine.primaryMuscles} assisting={machine.assistingMuscles} accent={accent} /><View style={styles.muscleCopy}><Text style={styles.rowMeta}>PRIMARY</Text><Text style={styles.rowTitle}>{machine.primaryMuscles.join(' · ')}</Text><Text style={[styles.rowMeta, { marginTop: 10 }]}>ASSISTS</Text><Text style={styles.rowTitle}>{machine.assistingMuscles.join(' · ') || '—'}</Text></View></View></View>}</ScrollView></SafeAreaView>;
+  return <SafeAreaView edges={['top', 'left', 'right']} style={styles.safe}><ScrollView contentContainerStyle={styles.machineScreen} keyboardShouldPersistTaps="handled"><View style={styles.machineNav}><IconBack onPress={onBack} /><View style={[styles.gymChip, { borderColor: `${accent}88` }]}><View style={[styles.gymChipDot, { backgroundColor: accent }]} /><Text style={styles.gymChipText}>{machine.gymName}</Text></View></View>{workout ? <WorkoutTimerBar startedAt={workout.startedAt} gymName={workout.gymName} setCount={workout.sets.length} /> : null}<View><Text style={[styles.machineCategory, { color: accent }]}>{machine.category.toUpperCase()} · STATION {machine.stationCode}</Text><Text style={styles.machineTitle}>{machine.name}</Text>{machine.stationName ? <Text style={styles.bodyMuted}>{machine.stationName}</Text> : null}</View><MachineTabs tab={machineTab} onChange={setMachineTab} accent={accent} historyCount={history.length} />{machineTab === 'log' ? <SetLogger machine={machine} session={session} sessionId={sessionId} preferences={preferences} accent={accent} onSaved={async (item, nextWorkout) => { setHistory((current) => [{ id: item.clientLogId, client_log_id: item.clientLogId, weight_lb: item.weight, reps: item.reps, seat_setting: item.seatSetting, notes: item.notes, occurred_at: item.createdAt }, ...current]); await onWorkoutChanged(nextWorkout); }} /> : machineTab === 'progress' ? <HistoryList history={history} unit={preferences.weightUnit} accent={accent} /> : <View style={styles.howTo}><MachineVideo url={machine.videoUrl} gymName={machine.gymName} accent={accent} /><View><SectionTitle>Steps</SectionTitle><View style={styles.instructions}>{machine.instructions.map((instruction, index) => <View key={`${instruction}-${index}`} style={styles.instruction}><View style={[styles.stepNumber, { backgroundColor: accent }]}><Text style={styles.stepNumberText}>{index + 1}</Text></View><Text style={styles.instructionText}>{instruction}</Text></View>)}</View></View><View><SectionTitle>Muscles worked</SectionTitle><MuscleMap primary={machine.primaryMuscles} assisting={machine.assistingMuscles} accent={accent} /><View style={styles.muscleCopy}><Text style={styles.rowMeta}>PRIMARY</Text><Text style={styles.rowTitle}>{machine.primaryMuscles.join(' · ')}</Text><Text style={[styles.rowMeta, { marginTop: 10 }]}>ASSISTS</Text><Text style={styles.rowTitle}>{machine.assistingMuscles.join(' · ') || '—'}</Text></View></View></View>}</ScrollView></SafeAreaView>;
 }
 
 function ExercisePicker({ machine, onBack, onExercise }: { machine: MemberMachine; onBack: () => void; onExercise: (slug: string) => void }) {
   return <SafeAreaView edges={['top', 'left', 'right']} style={styles.safe}><ScrollView contentContainerStyle={styles.machineScreen}><IconBack onPress={onBack} /><Text style={styles.machineCategory}>{machine.gymName.toUpperCase()} · STATION {machine.stationCode}</Text><Text style={styles.machineTitle}>{machine.name}</Text><Text style={styles.bodyMuted}>Choose the movement you’re performing. Your history stays separate for every exercise.</Text><View style={styles.exerciseGrid}>{machine.exercises?.map((exercise) => <Pressable key={exercise.slug} onPress={() => onExercise(exercise.slug)} style={styles.exerciseChoice}><View style={styles.exerciseIcon}><Ionicons name="barbell-outline" size={22} color={colors.lime} /></View><View style={styles.flex}><Text style={styles.rowTitle}>{exercise.name}</Text><Text style={styles.rowMeta}>{exercise.category}</Text></View><Ionicons name="chevron-forward" size={18} color={colors.muted} /></Pressable>)}</View></ScrollView></SafeAreaView>;
 }
 
-function SetLogger({ machine, session, sessionId, preferences, accent, onSaved }: { machine: MemberMachine; session: Session | null; sessionId: string; preferences: MemberPreferences; accent: string; onSaved: (set: WorkoutSet) => void }) {
+function SetLogger({ machine, session, sessionId, preferences, accent, onSaved }: { machine: MemberMachine; session: Session | null; sessionId: string; preferences: MemberPreferences; accent: string; onSaved: (set: WorkoutSet, workout: WorkoutSession) => Promise<void> }) {
   const [weight, setWeight] = useState(''); const [reps, setReps] = useState(''); const [seat, setSeat] = useState(''); const [notes, setNotes] = useState(''); const [busy, setBusy] = useState(false); const [message, setMessage] = useState('');
   const save = async () => {
     const entered = Number(weight); const repCount = Number(reps);
@@ -403,13 +411,20 @@ function SetLogger({ machine, session, sessionId, preferences, accent, onSaved }
     const pounds = preferences.weightUnit === 'kg' ? entered * 2.2046226218 : entered;
     const item: WorkoutSet = { clientLogId: newId(), publicId: machine.publicId, machineName: machine.stationName || machine.name, exerciseSlug: machine.exerciseSlug, exerciseName: machine.name, gymName: machine.gymName, weight: Number(pounds.toFixed(2)), reps: repCount, seatSetting: seat.trim() || null, notes: notes.trim() || null, createdAt: new Date().toISOString(), syncState: 'pending' };
     setBusy(true); setMessage('');
-    const gymId = gymIdFor(machine.gymName);
-    const workout = await ensureActiveWorkout(gymId, machine.gymName);
-    item.workoutSessionId = workout.id;
-    await appendWorkoutSet(gymId, machine.gymName, item);
-    try { await recordSet(item, sessionId, session); item.syncState = 'synced'; await replaceWorkoutSet(item.clientLogId, { syncState: 'synced' }); setMessage('Set saved.'); }
-    catch { setMessage('Set saved offline. StrictlyVision will sync it when your connection returns.'); }
-    setWeight(''); setReps(''); setSeat(''); setNotes(''); setBusy(false); onSaved(item);
+    try {
+      const gymId = gymIdFor(machine.gymName);
+      const workout = await ensureActiveWorkout(gymId, machine.gymName);
+      item.workoutSessionId = workout.id;
+      const savedWorkout = await appendWorkoutSet(gymId, machine.gymName, item);
+      // Update the screen from the exact local value before attempting the network. Guest logging
+      // therefore remains fully functional when anonymous auth or the API is unavailable.
+      await onSaved(item, savedWorkout);
+      setWeight(''); setReps(''); setSeat(''); setNotes('');
+      try { await recordSet(item, sessionId, session); item.syncState = 'synced'; await replaceWorkoutSet(item.clientLogId, { syncState: 'synced' }); setMessage('Set saved on this phone.'); }
+      catch { setMessage('Set saved on this phone. It will sync when your connection returns.'); }
+    } catch (reason) {
+      setMessage(reason instanceof Error ? `Set was not saved: ${reason.message}` : 'Set was not saved. Free up storage and try again.');
+    } finally { setBusy(false); }
   };
   return <View><Card style={styles.logger}><View style={styles.twoCol}><View style={styles.flex}><Field label={`Weight (${preferences.weightUnit})`} value={weight} onChangeText={setWeight} keyboardType="decimal-pad" placeholder="Enter weight" /></View><View style={styles.flex}><Field label="Reps" value={reps} onChangeText={setReps} keyboardType="number-pad" placeholder="Enter reps" /></View></View><Field label="Seat or machine setting · optional" value={seat} onChangeText={setSeat} autoCapitalize="characters" placeholder="Example: 4, B, or 3C" maxLength={12} /><Field label="Notes · optional" value={notes} onChangeText={setNotes} placeholder="Form cue, tempo, or how it felt" maxLength={160} />{message ? <Notice tone={/saved\.$/i.test(message) ? 'success' : 'normal'}>{message}</Notice> : null}<Pressable accessibilityRole="button" onPress={save} disabled={busy || !weight || !reps} style={({ pressed }) => [styles.accentButton, { backgroundColor: accent }, (!weight || !reps) && styles.disabled, pressed && styles.pressed]}>{busy ? <ActivityIndicator color={colors.black} /> : <Text style={styles.accentButtonText}>Record top set</Text>}</Pressable></Card></View>;
 }

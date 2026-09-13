@@ -87,16 +87,24 @@
       [
         "@kingstinct/react-native-healthkit",
         {
-          "NSHealthShareUsageDescription": "StrictlyVision reads heart rate, active calories, and workouts from Apple Health to add them to your gym sessions.",
-          "NSHealthUpdateUsageDescription": "StrictlyVision saves your finished gym workouts, including duration, to Apple Health.",
+          "NSHealthShareUsageDescription": "StrictlyVision reads workout time, heart rate, and active energy from Apple Health to attach those values to completed workouts in your StrictlyVision history.",
+          "NSHealthUpdateUsageDescription": "StrictlyVision writes a completed strength workout and its duration to Apple Health only after you finish a workout with Health sync enabled.",
           "background": false
         }
       ],
-      "expo-secure-store",
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": false
+        }
+      ],
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "StrictlyVision uses your location to show the partner gym closest to you."
+          "locationWhenInUsePermission": "StrictlyVision uses your location only while the app is open to show the partner gym closest to you.",
+          "locationAlwaysAndWhenInUsePermission": false,
+          "locationAlwaysPermission": false,
+          "motionUsagePermission": false
         }
       ],
       "react-native-health-connect",
@@ -114,7 +122,11 @@
     "extra": {
       "supabaseUrl": "https://owedpojalgtkiuthptft.supabase.co",
       "supabasePublishableKey": "sb_publishable_7FLJBomC7TcEGCbTMPPn8Q_U0aj_zVG",
-      "ownerApiUrl": "https://strictlyinc.com"
-    }
+      "ownerApiUrl": "https://strictlyinc.com",
+      "eas": {
+        "projectId": "144cd34f-9ee8-4756-86e2-842c4a39cce1"
+      }
+    },
+    "owner": "yaseentolba"
   }
 }

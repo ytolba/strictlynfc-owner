@@ -123,3 +123,7 @@ export async function rememberMachine(machine: MemberMachine) {
 export async function loadRecentMachines() {
   return readJson<MemberMachine[]>(RECENT_KEY, []);
 }
+
+export async function clearMemberData() {
+  await AsyncStorage.multiRemove([ACTIVE_KEY, FINISHED_KEY, PREFERENCES_KEY, RECENT_KEY]);
+}
