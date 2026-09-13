@@ -24,7 +24,8 @@ import { machineLinkFromUrl } from './src/member/api';
 
 type Tab = 'dashboard' | 'machines' | 'setup' | 'account';
 type AppMode = 'member' | 'owner';
-type MachineLink = { publicId: string; exerciseSlug?: string };
+// `openedAt` makes every tag tap a new value, so tapping the same machine again still reopens it.
+type MachineLink = { publicId: string; exerciseSlug?: string; openedAt?: number };
 const MODE_KEY = 'strictlyvision.app-mode.v1';
 
 const blankDraft = (): MachineDraft => ({ name: '', stationCode: '', category: '', status: 'active', primaryMuscles: [], assistingMuscles: [], instructions: [] });
@@ -55,7 +56,7 @@ export default function App() {
     const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession));
     const linkSubscription = Linking.addEventListener('url', ({ url }) => {
       const link = machineLinkFromUrl(url);
-      if (link) { setInitialLink(link); chooseMode('member'); }
+      if (link) { setInitialLink({ ...link, openedAt: Date.now() }); chooseMode('member'); }
     });
     return () => { data.subscription.unsubscribe(); linkSubscription.remove(); };
   }, []);

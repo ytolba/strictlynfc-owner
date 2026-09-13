@@ -30,7 +30,7 @@ import type { EquipmentSummary, MachineHistoryItem, MemberMachine, MemberPrefere
 import { VAULT_EQUIPMENT, VAULT_GYM } from './vaultCatalog';
 
 type MemberTab = 'today' | 'scan' | 'gyms' | 'profile';
-type MachineLink = { publicId: string; exerciseSlug?: string };
+type MachineLink = { publicId: string; exerciseSlug?: string; openedAt?: number };
 
 export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Session | null; initialLink?: MachineLink | null; onSwitchOwner: () => void }) {
   const [tab, setTab] = useState<MemberTab>('today');
@@ -63,7 +63,8 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
   useEffect(() => { reload(); }, [reload]);
   // Guests need a Supabase session (anonymous sign-in) for cloud workout history and Strava.
   useEffect(() => { if (!session) supabase.auth.signInAnonymously().catch(() => undefined); }, [session?.user.id]);
-  useEffect(() => { if (initialLink) setMachineLink(initialLink); }, [initialLink?.publicId, initialLink?.exerciseSlug]);
+  // Re-run on every tap (openedAt changes), not only when the station changes.
+  useEffect(() => { if (initialLink) setMachineLink(initialLink); }, [initialLink?.publicId, initialLink?.exerciseSlug, initialLink?.openedAt]);
 
   const refresh = async () => { setRefreshing(true); await reload(); setRefreshing(false); };
   const openMachine = (publicId: string, exerciseSlug?: string) => setMachineLink({ publicId, exerciseSlug });
