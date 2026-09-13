@@ -4,11 +4,12 @@ export const VAULT_GYM: PartnerGym = {
   id: 'vault-fitness-club',
   slug: 'vaultclub',
   name: 'Vault Fitness Club',
-  address: 'Boulevard Park',
-  city: 'Burien',
-  region: 'Washington',
-  latitude: 47.4839,
-  longitude: -122.3476,
+  address: '1850 S 120th St',
+  city: 'Seattle',
+  region: 'WA',
+  // US Census geocoder match for 1850 S 120th St, Seattle, WA 98168.
+  latitude: 47.495842,
+  longitude: -122.308036,
   equipmentCount: 41,
   accentColor: '#F2C44D',
   backgroundColor: '#090909'
