@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator, Alert, KeyboardAvoidingView, Linking, Platform, Pressable, RefreshControl,
+  ActivityIndicator, Alert, BackHandler, KeyboardAvoidingView, Linking, Platform, Pressable, RefreshControl,
   ScrollView, Share, StyleSheet, Text, View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -23,7 +23,7 @@ import {
   appendWorkoutSet, discardActiveWorkout, ensureActiveWorkout, finishActiveWorkout, loadActiveWorkout, loadFinishedWorkouts, loadPendingWorkoutSets, loadPreferences,
   loadRecentMachines, markWorkoutCloudSynced, updateFinishedWorkout, markWorkoutSetSynced, newId, rememberMachine, replaceWorkoutSet, savePreferences
 } from './storage';
-import { isHealthKitSupported, readWorkoutHealthStats, requestHealthKitAccess, saveWorkoutToHealth } from './health';
+import { healthProviderName, isHealthKitSupported, readWorkoutHealthStats, requestHealthKitAccess, saveWorkoutToHealth } from './health';
 import { connectStrava, disconnectStrava, isStravaConfigured, loadStravaConnection, uploadWorkoutToStrava } from './strava';
 import { WorkoutTimerBar, useElapsed } from './WorkoutTimer';
 import type { EquipmentSummary, MachineHistoryItem, MemberMachine, MemberPreferences, PartnerGym, WorkoutSession, WorkoutSet } from './types';
@@ -68,6 +68,16 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
   const refresh = async () => { setRefreshing(true); await reload(); setRefreshing(false); };
   const openMachine = (publicId: string, exerciseSlug?: string) => setMachineLink({ publicId, exerciseSlug });
 
+  // Android hardware back: leave the machine screen, then return to Today, before exiting the app.
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (machineLink) { setMachineLink(null); return true; }
+      if (tab !== 'today') { setTab('today'); return true; }
+      return false;
+    });
+    return () => subscription.remove();
+  }, [machineLink, tab]);
+
   const completeWorkout = async () => {
     const result = await finishActiveWorkout();
     if (!result) return reload();
@@ -82,10 +92,10 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
     if (preferences.healthKitEnabled) {
       try {
         const saved = await saveWorkoutToHealth(result);
-        if (saved === 'matched') exports.push('Linked to your Apple Watch workout.');
-        else if (saved === 'saved') exports.push('Saved to Apple Health.');
+        if (saved === 'matched') exports.push('Linked to your watch workout.');
+        else if (saved === 'saved') exports.push(`Saved to ${healthProviderName()}.`);
       }
-      catch { exports.push('Apple Health could not save this workout.'); }
+      catch { exports.push(`${healthProviderName()} could not save this workout.`); }
     }
     try { if (await uploadWorkoutToStrava(session, result)) exports.push('Uploaded to Strava.'); }
     catch (reason) { exports.push(reason instanceof Error ? reason.message : 'Strava upload failed.'); }
@@ -248,7 +258,7 @@ function ProfileScreen({ session, preferences, onPreferences, onSwitchOwner }: {
   const toggleHealth = async () => {
     if (preferences.healthKitEnabled) return onPreferences({ ...preferences, healthKitEnabled: false });
     try { await requestHealthKitAccess(); onPreferences({ ...preferences, healthKitEnabled: true }); }
-    catch (reason) { Alert.alert('Apple Health unavailable', reason instanceof Error ? reason.message : 'Please try again.'); }
+    catch (reason) { Alert.alert(`${healthProviderName()} unavailable`, reason instanceof Error ? reason.message : 'Please try again.'); }
   };
   const toggleStrava = async () => {
     if (strava.connected) {
@@ -295,7 +305,7 @@ function ProfileScreen({ session, preferences, onPreferences, onSwitchOwner }: {
       <SettingRow icon="barbell-outline" title="Weight units" copy="Used throughout logs and progress"><View style={styles.segment}><Pressable onPress={() => onPreferences({ ...preferences, weightUnit: 'lb' })} style={[styles.segmentItem, preferences.weightUnit === 'lb' && styles.segmentActive]}><Text style={[styles.segmentText, preferences.weightUnit === 'lb' && styles.segmentTextActive]}>lb</Text></Pressable><Pressable onPress={() => onPreferences({ ...preferences, weightUnit: 'kg' })} style={[styles.segmentItem, preferences.weightUnit === 'kg' && styles.segmentActive]}><Text style={[styles.segmentText, preferences.weightUnit === 'kg' && styles.segmentTextActive]}>kg</Text></Pressable></View></SettingRow>
       <SettingRow icon="location-outline" title="Preferred gyms" copy={`${preferences.favoriteGymIds.length} selected`} />
       <SectionTitle>Connections</SectionTitle>
-      {isHealthKitSupported() ? <Pressable accessibilityRole="switch" accessibilityState={{ checked: !!preferences.healthKitEnabled }} onPress={toggleHealth}><SettingRow icon="heart-outline" title="Apple Health" copy={preferences.healthKitEnabled ? 'Heart rate and calories add to finished workouts' : 'Add heart rate and calories from Apple Watch'}><Text style={[styles.connectText, preferences.healthKitEnabled && styles.connectTextOn]}>{preferences.healthKitEnabled ? 'On' : 'Connect'}</Text></SettingRow></Pressable> : null}
+      {isHealthKitSupported() ? <Pressable accessibilityRole="switch" accessibilityState={{ checked: !!preferences.healthKitEnabled }} onPress={toggleHealth}><SettingRow icon="heart-outline" title={healthProviderName()} copy={preferences.healthKitEnabled ? 'Heart rate and calories add to finished workouts' : 'Add heart rate and calories from your watch'}><Text style={[styles.connectText, preferences.healthKitEnabled && styles.connectTextOn]}>{preferences.healthKitEnabled ? 'On' : 'Connect'}</Text></SettingRow></Pressable> : null}
       <Pressable accessibilityRole="button" onPress={toggleStrava} disabled={connecting || (!strava.connected && !isStravaConfigured())}><SettingRow icon="bicycle-outline" title="Strava" copy={strava.connected ? `Connected${strava.name ? ` as ${strava.name}` : ''} · workouts upload when you finish` : isStravaConfigured() ? 'Upload finished workouts as Weight Training' : 'Coming soon'}>{connecting ? <ActivityIndicator color={colors.lime} /> : <Text style={[styles.connectText, strava.connected && styles.connectTextOn]}>{strava.connected ? 'On' : isStravaConfigured() ? 'Connect' : ''}</Text>}</SettingRow></Pressable>
       <SectionTitle>App</SectionTitle>
       <Pressable onPress={onSwitchOwner}><SettingRow icon="business-outline" title="Switch to owner tools" copy="Approved gym accounts only" chevron /></Pressable>
