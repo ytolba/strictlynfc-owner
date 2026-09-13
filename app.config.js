@@ -9,6 +9,8 @@ module.exports = ({ config }) => {
     android: {
       ...config.android,
       config: { ...config.android?.config, googleMaps: { apiKey } }
-    }
+    },
+    // Expo strips android.config from the runtime manifest, so expose only a flag the app can read.
+    extra: { ...config.extra, googleMapsAndroidConfigured: true }
   };
 };

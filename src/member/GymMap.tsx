@@ -9,9 +9,9 @@ import type { PartnerGym } from './types';
 
 export type Coords = { latitude: number; longitude: number };
 
-// Google Maps on Android crashes the app without an API key (app.json android.config.googleMaps.apiKey).
-// iOS uses Apple Maps and needs no key.
-const mapsAvailable = Platform.OS !== 'android' || !!Constants.expoConfig?.android?.config?.googleMaps?.apiKey;
+// Google Maps on Android crashes the app without an API key. app.config.js sets this flag when the key is
+// configured (the key itself is stripped from the runtime manifest). iOS uses Apple Maps and needs no key.
+const mapsAvailable = Platform.OS !== 'android' || Constants.expoConfig?.extra?.googleMapsAndroidConfigured === true;
 
 const MILES_PER_KM = 0.621371;
 export function distanceMiles(a: Coords, b: Coords) {
