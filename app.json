@@ -1,17 +1,21 @@
 {
   "expo": {
-    "name": "StrictlyNFC Owner",
-    "slug": "strictlynfc-owner",
+    "name": "StrictlyVision",
+    "slug": "strictlyvision",
     "version": "1.0.0",
-    "description": "Invite-only tools for Strictly partner gyms to manage equipment, program NFC tags, and view floor activity.",
+    "description": "Tap connected gym equipment, learn each movement, log workouts, track progress, and manage a smarter gym floor.",
     "orientation": "portrait",
-    "scheme": "strictlynfcowner",
-    "icon": "./assets/strictly-app-icon.png",
+    "scheme": "strictlyvision",
+    "icon": "./assets/strictlyvision-app-icon.png",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.strictlyinc.nfcowner",
+      "bundleIdentifier": "com.strictlyinc.strictlyvision",
+      "usesAppleSignIn": true,
+      "associatedDomains": [
+        "applinks:strictlyinc.com"
+      ],
       "infoPlist": {
-        "NFCReaderUsageDescription": "Strictly uses NFC to program and verify your gym's machine tags."
+        "NFCReaderUsageDescription": "StrictlyVision uses NFC to open connected gym equipment and to program tags for approved gym owners."
       },
       "entitlements": {
         "com.apple.developer.nfc.readersession.formats": [
@@ -21,36 +25,76 @@
       "appleTeamId": "67A2H77882"
     },
     "android": {
-      "package": "com.strictlyinc.nfcowner",
+      "package": "com.strictlyinc.strictlyvision",
       "permissions": [
         "android.permission.NFC"
       ],
       "adaptiveIcon": {
-        "foregroundImage": "./assets/strictly-app-icon.png",
-        "backgroundColor": "#071D12"
-      }
+        "foregroundImage": "./assets/strictlyvision-app-icon.png",
+        "backgroundColor": "#08090A"
+      },
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "strictlyinc.com",
+              "pathPrefix": "/t/"
+            },
+            {
+              "scheme": "https",
+              "host": "strictlyinc.com",
+              "pathPrefix": "/vaultclub/"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
     },
     "plugins": [
       [
         "react-native-nfc-manager",
         {
-          "nfcPermission": "Strictly uses NFC to program and verify your gym's machine tags."
+          "nfcPermission": "StrictlyVision uses NFC to open connected gym equipment and program tags for approved gym owners."
         }
       ],
       [
         "expo-splash-screen",
         {
-          "image": "./assets/strictly-mark-transparent.png",
+          "image": "./assets/strictlyvision-mark-transparent.png",
           "imageWidth": 180,
           "resizeMode": "contain",
-          "backgroundColor": "#071D12",
+          "backgroundColor": "#08090A",
           "dark": {
-            "image": "./assets/strictly-mark-transparent.png",
-            "backgroundColor": "#071D12"
+            "image": "./assets/strictlyvision-mark-transparent.png",
+            "backgroundColor": "#08090A"
           }
         }
       ],
-      "./plugins/withOptionalNfc"
+      "./plugins/withOptionalNfc",
+      "expo-apple-authentication",
+      "expo-video",
+      "expo-web-browser",
+      [
+        "@kingstinct/react-native-healthkit",
+        {
+          "NSHealthShareUsageDescription": "StrictlyVision reads your workouts so your gym sessions and Apple Health stay in sync.",
+          "NSHealthUpdateUsageDescription": "StrictlyVision saves your finished gym workouts, including duration, to Apple Health.",
+          "background": false
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "StrictlyVision uses your location to show the partner gym closest to you."
+        }
+      ]
     ],
     "extra": {
       "supabaseUrl": "https://owedpojalgtkiuthptft.supabase.co",

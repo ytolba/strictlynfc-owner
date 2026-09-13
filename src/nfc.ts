@@ -56,3 +56,17 @@ export async function verifyUrlOnTag(expectedUrl: string) {
     await NfcManager.cancelTechnologyRequest().catch(() => undefined);
   }
 }
+
+export async function scanUrlFromTag() {
+  await ensureNfc();
+  try {
+    await NfcManager.requestTechnology(NfcTech.Ndef, { alertMessage: 'Hold your phone near the equipment tag.' });
+    const tag = await NfcManager.getTag();
+    const url = decodeUrl(tag);
+    if (!url) throw new Error('This tag does not contain a StrictlyVision equipment link.');
+    if (Platform.OS === 'ios') await NfcManager.setAlertMessageIOS('Equipment found.');
+    return url;
+  } finally {
+    await NfcManager.cancelTechnologyRequest().catch(() => undefined);
+  }
+}

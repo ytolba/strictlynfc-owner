@@ -1,0 +1,61 @@
+import type { EquipmentSummary, PartnerGym } from './types';
+
+export const VAULT_GYM: PartnerGym = {
+  id: 'vault-fitness-club',
+  slug: 'vaultclub',
+  name: 'Vault Fitness Club',
+  address: 'Boulevard Park',
+  city: 'Burien',
+  region: 'Washington',
+  latitude: 47.4839,
+  longitude: -122.3476,
+  equipmentCount: 41,
+  accentColor: '#F2C44D',
+  backgroundColor: '#090909'
+};
+
+const VAULT_EQUIPMENT_ROWS = [
+  ['treadmill', 'Treadmill', 'Cardio', '01'],
+  ['elliptical', 'Elliptical', 'Cardio', '02'],
+  ['air-rower', 'Air Rower', 'Cardio', '03'],
+  ['stair-climber', 'Stair Climber', 'Cardio', '04'],
+  ['upright-bike', 'Upright Bike', 'Cardio', '05'],
+  ['recumbent-bike', 'Recumbent Bike', 'Cardio', '06'],
+  ['seated-chest-press', 'Seated Chest Press', 'Chest', '07'],
+  ['iso-lateral-incline-chest-press', 'Iso-Lateral Incline Chest Press', 'Chest', '08A'],
+  ['incline-chest-press', 'Incline Chest Press', 'Chest', '08'],
+  ['high-row', 'High Row', 'Back', '09'],
+  ['functional-trainer', 'Functional Trainer', 'Multi-exercise', '10'],
+  ['shoulder-press', 'Shoulder Press', 'Shoulders', '11'],
+  ['front-high-row', 'Front High Row', 'Back', '12'],
+  ['seated-row', 'Seated Row', 'Back', '13'],
+  ['leg-press', '45-Degree Leg Press', 'Lower Body', '14'],
+  ['hip-abductor-adductor', 'Hip Abductor / Adductor', 'Multi-exercise', '15'],
+  ['leg-extension-curl', 'Leg Extension / Seated Leg Curl', 'Multi-exercise', '16'],
+  ['leg-extension-prone-curl', 'Leg Extension / Prone Leg Curl', 'Multi-exercise', '16B'],
+  ['smith-machine', 'Smith Machine', 'Multi-exercise', '17'],
+  ['triceps-press', 'Triceps Press', 'Arms', '18'],
+  ['biceps-curl', 'Biceps Curl Machine', 'Arms', '19'],
+  ['triceps-pushdown', 'Triceps Pushdown Machine', 'Arms', '20'],
+  ['lat-pulldown-low-row', 'Lat Pulldown / Low Row', 'Multi-exercise', '21'],
+  ['ab-crunch', 'Ab Crunch Machine', 'Core', '22'],
+  ['dumbbells', 'Dumbbell Area', 'Multi-exercise', '23'],
+  ['barbells-plates', 'Barbells & Plates', 'Multi-exercise', '24'],
+  ['decline-chest-press', 'Decline Chest Press', 'Chest', '25'],
+  ['flat-chest-press', 'Flat Chest Press', 'Chest', '26'],
+  ['powerrack', 'Power Rack', 'Multi-exercise', '27'],
+  ['adjustable-bench', 'Adjustable Bench', 'Multi-exercise', '28'],
+  ['preacher-curl', 'Preacher Curl Bench', 'Arms', '29'],
+  ['wall-ball', 'Wall Ball', 'Functional', '30'],
+  ['bulgarian-bag', 'Bulgarian Bag', 'Functional', '31'],
+  ['resistance-bands', 'Resistance Bands', 'Functional', '32'],
+  ['yoga-mat', 'Yoga Mat', 'Mobility', '33'],
+  ['exercise-ball', 'Exercise Ball', 'Core', '34'],
+  ['pec-deck', 'Pec Deck', 'Chest', '35'],
+  ['assisted-pullup-dip', 'Assisted Pull-Up / Dip', 'Multi-exercise', '36'],
+  ['hip-thrust', 'Hip Thrust Machine', 'Lower Body', '37'],
+  ['back-extension', '45-Degree Back Extension', 'Posterior Chain', '38'],
+  ['lateral-raise', 'Lateral Raise Machine', 'Shoulders', '39']
+] as const;
+
+export const VAULT_EQUIPMENT: EquipmentSummary[] = VAULT_EQUIPMENT_ROWS.map(([publicId, name, category, stationCode]) => ({ publicId, name, category, stationCode }));
