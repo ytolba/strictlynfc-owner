@@ -83,7 +83,7 @@
       [
         "@kingstinct/react-native-healthkit",
         {
-          "NSHealthShareUsageDescription": "StrictlyVision reads your workouts so your gym sessions and Apple Health stay in sync.",
+          "NSHealthShareUsageDescription": "StrictlyVision reads heart rate, active calories, and workouts from Apple Health to add them to your gym sessions.",
           "NSHealthUpdateUsageDescription": "StrictlyVision saves your finished gym workouts, including duration, to Apple Health.",
           "background": false
         }

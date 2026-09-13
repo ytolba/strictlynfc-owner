@@ -18,6 +18,10 @@ export async function saveWorkoutToCloud(session: Session | null, workout: Worko
     set_count: workout.sets.length,
     exercise_count: exerciseCount,
     volume_lb: Math.round(volume),
+    avg_heart_rate: workout.health?.avgHeartRate ?? null,
+    max_heart_rate: workout.health?.maxHeartRate ?? null,
+    active_calories: workout.health?.activeCalories ?? null,
+    health_source: workout.health?.source ?? null,
     sets: workout.sets.map(({ syncState, ...set }) => set)
   });
   if (error) throw new Error(error.message);

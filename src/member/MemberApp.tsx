@@ -21,9 +21,9 @@ import { GymMap, distanceMiles, formatMiles, type Coords } from './GymMap';
 import { MuscleMap } from './MuscleMap';
 import {
   appendWorkoutSet, discardActiveWorkout, ensureActiveWorkout, finishActiveWorkout, loadActiveWorkout, loadFinishedWorkouts, loadPendingWorkoutSets, loadPreferences,
-  loadRecentMachines, markWorkoutCloudSynced, markWorkoutSetSynced, newId, rememberMachine, replaceWorkoutSet, savePreferences
+  loadRecentMachines, markWorkoutCloudSynced, updateFinishedWorkout, markWorkoutSetSynced, newId, rememberMachine, replaceWorkoutSet, savePreferences
 } from './storage';
-import { isHealthKitSupported, requestHealthKitAccess, saveWorkoutToHealth } from './health';
+import { isHealthKitSupported, readWorkoutHealthStats, requestHealthKitAccess, saveWorkoutToHealth } from './health';
 import { connectStrava, disconnectStrava, isStravaConfigured, loadStravaConnection, uploadWorkoutToStrava } from './strava';
 import { WorkoutTimerBar, useElapsed } from './WorkoutTimer';
 import type { EquipmentSummary, MachineHistoryItem, MemberMachine, MemberPreferences, PartnerGym, WorkoutSession, WorkoutSet } from './types';
@@ -71,16 +71,25 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
   const completeWorkout = async () => {
     const result = await finishActiveWorkout();
     if (!result) return reload();
+    // Pull heart rate and active calories Apple Health recorded between the first tap and Finish.
+    if (preferences.healthKitEnabled) {
+      const health = await readWorkoutHealthStats(result).catch(() => null);
+      if (health) { result.health = health; await updateFinishedWorkout(result.id, { health }); }
+    }
     const exports: string[] = [session ? 'Saved on this phone. It will sync to your account when you’re back online.' : 'Saved on this phone.'];
     try { if (await saveWorkoutToCloud(session, result)) { await markWorkoutCloudSynced(result.id); exports[0] = 'Saved to your workout history.'; } }
     catch { /* Kept locally; reload() retries. */ }
     if (preferences.healthKitEnabled) {
-      try { if (await saveWorkoutToHealth(result)) exports.push('Saved to Apple Health.'); }
+      try {
+        const saved = await saveWorkoutToHealth(result);
+        if (saved === 'matched') exports.push('Linked to your Apple Watch workout.');
+        else if (saved === 'saved') exports.push('Saved to Apple Health.');
+      }
       catch { exports.push('Apple Health could not save this workout.'); }
     }
     try { if (await uploadWorkoutToStrava(session, result)) exports.push('Uploaded to Strava.'); }
     catch (reason) { exports.push(reason instanceof Error ? reason.message : 'Strava upload failed.'); }
-    Alert.alert('Workout complete', [workoutSummary(result), ...exports].join('\n'));
+    Alert.alert('Workout complete', [workoutSummary(result), healthSummary(result.health), ...exports].filter(Boolean).join('\n'));
     await reload();
   };
   const finishWorkout = () => {
@@ -154,7 +163,7 @@ function TodayScreen({ workout, finished, recent, onOpen, onFinish, refreshing, 
       {recent.length ? <View style={styles.list}>{recent.map((machine) => <EquipmentRow key={`${machine.publicId}:${machine.exerciseSlug || ''}`} machine={machine} onPress={() => onOpen(machine.publicId, machine.exerciseSlug || undefined)} />)}</View> : <EmptyRow icon="scan-outline" title="No equipment yet" copy="Your recently scanned machines will stay one tap away." />}
 
       <SectionTitle>Previous workouts</SectionTitle>
-      {finished.length ? <View style={styles.list}>{finished.slice(0, 5).map((item) => <View key={item.id} style={styles.historyRow}><View><Text style={styles.rowTitle}>{new Date(item.startedAt).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</Text><Text style={styles.rowMeta}>{item.gymName} · {workoutMinutes(item)} min · {item.sets.length} sets</Text></View><Text style={styles.historyVolume}>{Math.round(item.sets.reduce((sum, set) => sum + set.weight * set.reps, 0)).toLocaleString()} lb</Text></View>)}</View> : <EmptyRow icon="time-outline" title="No completed workouts" copy="Finish a workout and its summary will live here." />}
+      {finished.length ? <View style={styles.list}>{finished.slice(0, 5).map((item) => <View key={item.id} style={styles.historyRow}><View><Text style={styles.rowTitle}>{new Date(item.startedAt).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</Text><Text style={styles.rowMeta}>{item.gymName} · {workoutMinutes(item)} min · {item.sets.length} sets{item.health?.avgHeartRate ? ` · ♥ ${item.health.avgHeartRate} bpm` : ''}{item.health?.activeCalories ? ` · ${item.health.activeCalories} kcal` : ''}</Text></View><Text style={styles.historyVolume}>{Math.round(item.sets.reduce((sum, set) => sum + set.weight * set.reps, 0)).toLocaleString()} lb</Text></View>)}</View> : <EmptyRow icon="time-outline" title="No completed workouts" copy="Finish a workout and its summary will live here." />}
     </ScrollView>
   );
 }
@@ -286,7 +295,7 @@ function ProfileScreen({ session, preferences, onPreferences, onSwitchOwner }: {
       <SettingRow icon="barbell-outline" title="Weight units" copy="Used throughout logs and progress"><View style={styles.segment}><Pressable onPress={() => onPreferences({ ...preferences, weightUnit: 'lb' })} style={[styles.segmentItem, preferences.weightUnit === 'lb' && styles.segmentActive]}><Text style={[styles.segmentText, preferences.weightUnit === 'lb' && styles.segmentTextActive]}>lb</Text></Pressable><Pressable onPress={() => onPreferences({ ...preferences, weightUnit: 'kg' })} style={[styles.segmentItem, preferences.weightUnit === 'kg' && styles.segmentActive]}><Text style={[styles.segmentText, preferences.weightUnit === 'kg' && styles.segmentTextActive]}>kg</Text></Pressable></View></SettingRow>
       <SettingRow icon="location-outline" title="Preferred gyms" copy={`${preferences.favoriteGymIds.length} selected`} />
       <SectionTitle>Connections</SectionTitle>
-      {isHealthKitSupported() ? <Pressable accessibilityRole="switch" accessibilityState={{ checked: !!preferences.healthKitEnabled }} onPress={toggleHealth}><SettingRow icon="heart-outline" title="Apple Health" copy={preferences.healthKitEnabled ? 'Finished workouts save to Health' : 'Save finished workouts to Health'}><Text style={[styles.connectText, preferences.healthKitEnabled && styles.connectTextOn]}>{preferences.healthKitEnabled ? 'On' : 'Connect'}</Text></SettingRow></Pressable> : null}
+      {isHealthKitSupported() ? <Pressable accessibilityRole="switch" accessibilityState={{ checked: !!preferences.healthKitEnabled }} onPress={toggleHealth}><SettingRow icon="heart-outline" title="Apple Health" copy={preferences.healthKitEnabled ? 'Heart rate and calories add to finished workouts' : 'Add heart rate and calories from Apple Watch'}><Text style={[styles.connectText, preferences.healthKitEnabled && styles.connectTextOn]}>{preferences.healthKitEnabled ? 'On' : 'Connect'}</Text></SettingRow></Pressable> : null}
       <Pressable accessibilityRole="button" onPress={toggleStrava} disabled={connecting || (!strava.connected && !isStravaConfigured())}><SettingRow icon="bicycle-outline" title="Strava" copy={strava.connected ? `Connected${strava.name ? ` as ${strava.name}` : ''} · workouts upload when you finish` : isStravaConfigured() ? 'Upload finished workouts as Weight Training' : 'Coming soon'}>{connecting ? <ActivityIndicator color={colors.lime} /> : <Text style={[styles.connectText, strava.connected && styles.connectTextOn]}>{strava.connected ? 'On' : isStravaConfigured() ? 'Connect' : ''}</Text>}</SettingRow></Pressable>
       <SectionTitle>App</SectionTitle>
       <Pressable onPress={onSwitchOwner}><SettingRow icon="business-outline" title="Switch to owner tools" copy="Approved gym accounts only" chevron /></Pressable>
@@ -449,6 +458,15 @@ function EquipmentRow({ machine, onPress }: { machine: MemberMachine; onPress: (
 function EmptyRow({ icon, title, copy }: { icon: keyof typeof Ionicons.glyphMap; title: string; copy: string }) { return <View style={styles.emptyRow}><Ionicons name={icon} size={24} color={colors.muted} /><View style={styles.flex}><Text style={styles.rowTitle}>{title}</Text><Text style={styles.rowMeta}>{copy}</Text></View></View>; }
 function SettingRow({ icon, title, copy, children, chevron }: { icon: keyof typeof Ionicons.glyphMap; title: string; copy?: string; children?: React.ReactNode; chevron?: boolean }) { return <View style={styles.settingRow}><View style={styles.settingIcon}><Ionicons name={icon} size={20} color={colors.lime} /></View><View style={styles.flex}><Text style={styles.rowTitle}>{title}</Text>{copy ? <Text style={styles.rowMeta}>{copy}</Text> : null}</View>{children}{chevron ? <Ionicons name="chevron-forward" size={18} color={colors.muted} /> : null}</View>; }
 function workoutSummary(workout: WorkoutSession) { const duration = Math.max(1, Math.round((new Date(workout.finishedAt || Date.now()).getTime() - new Date(workout.startedAt).getTime()) / 60000)); const exercises = new Set(workout.sets.map((set) => set.exerciseName || set.machineName)).size; const volume = Math.round(workout.sets.reduce((sum, set) => sum + set.weight * set.reps, 0)); return `${duration} min · ${exercises} exercises · ${workout.sets.length} sets · ${volume.toLocaleString()} lb volume`; }
+function healthSummary(health?: WorkoutSession['health']) {
+  if (!health) return '';
+  const parts = [
+    health.avgHeartRate ? `avg ${health.avgHeartRate} bpm` : '',
+    health.maxHeartRate ? `max ${health.maxHeartRate} bpm` : '',
+    health.activeCalories ? `${health.activeCalories} active kcal` : ''
+  ].filter(Boolean);
+  return parts.length ? `♥ ${parts.join(' · ')}` : '';
+}
 function gymIdFor(gymName: string) { return gymName === VAULT_GYM.name ? VAULT_GYM.id : gymName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'strictly-demo-gym'; }
 function nfcError(reason: unknown) { const message = reason instanceof Error ? reason.message : 'The scan did not finish.'; if (/cancel|invalidate/i.test(message)) return 'Scan canceled. You can try again or enter the station code.'; if (/support/i.test(message)) return 'NFC is not available on this device. Enter the station code instead.'; return message; }
 

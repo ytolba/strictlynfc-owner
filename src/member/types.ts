@@ -70,6 +70,14 @@ export type WorkoutSession = {
   finishedAt?: string | null;
   sets: WorkoutSet[];
   cloudSynced?: boolean;
+  health?: WorkoutHealthStats | null;
+};
+
+export type WorkoutHealthStats = {
+  avgHeartRate: number | null;
+  maxHeartRate: number | null;
+  activeCalories: number | null;
+  source: 'watch_workout' | 'health_samples';
 };
 
 export type MachineHistoryItem = {

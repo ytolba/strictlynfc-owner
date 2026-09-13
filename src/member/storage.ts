@@ -93,6 +93,13 @@ export async function loadFinishedWorkouts() {
   return readJson<WorkoutSession[]>(FINISHED_KEY, []);
 }
 
+export async function updateFinishedWorkout(id: string, update: Partial<WorkoutSession>) {
+  const finished = await readJson<WorkoutSession[]>(FINISHED_KEY, []);
+  const next = finished.map((workout) => workout.id === id ? { ...workout, ...update } : workout);
+  await AsyncStorage.setItem(FINISHED_KEY, JSON.stringify(next));
+  return next.find((workout) => workout.id === id) ?? null;
+}
+
 export async function markWorkoutCloudSynced(id: string) {
   const finished = await readJson<WorkoutSession[]>(FINISHED_KEY, []);
   await AsyncStorage.setItem(FINISHED_KEY, JSON.stringify(finished.map((workout) => workout.id === id ? { ...workout, cloudSynced: true } : workout)));
