@@ -8,3 +8,7 @@ android/
 *.p12
 *.mobileprovision
 .DS_Store
+
+# local secrets (Google Maps key, etc.)
+.env
+.env*.local
