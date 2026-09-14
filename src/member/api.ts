@@ -1,5 +1,5 @@
 import type { Session } from '@supabase/supabase-js';
-import type { MachineHistoryItem, MemberMachine, PartnerGym, WorkoutSet } from './types';
+import type { EquipmentSummary, MachineHistoryItem, MemberMachine, PartnerGym, WorkoutSet } from './types';
 import { VAULT_GYM } from './vaultCatalog';
 
 const API_URL = 'https://strictlyinc.com';
@@ -87,6 +87,13 @@ export async function loadHistory(publicId: string, sessionId: string, session: 
   const response = await fetch(`${API_URL}/api/nfc/history?${query}`, { headers: memberHeaders(session, false) });
   const result = await parsed<{ history: MachineHistoryItem[] }>(response);
   return result.history;
+}
+
+// Equipment comes from the server for every gym, so new gyms and stations need no app update.
+export async function loadGymEquipment(gymId: string): Promise<EquipmentSummary[]> {
+  const response = await fetch(`${API_URL}/api/member/gyms/${encodeURIComponent(gymId)}/equipment`);
+  const data = await parsed<{ equipment: EquipmentSummary[] }>(response);
+  return data.equipment;
 }
 
 export async function loadPartnerGyms(): Promise<PartnerGym[]> {

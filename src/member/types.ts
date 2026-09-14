@@ -19,6 +19,10 @@ export type MemberMachine = {
   assistingMuscles: string[];
   instructions: string[];
   videoUrl?: string | null;
+  gymSlug?: string | null;
+  accentColor?: string | null;
+  backgroundColor?: string | null;
+  logoUrl?: string | null;
   stationType?: 'single_exercise' | 'multi_exercise';
   exerciseSlug?: string | null;
   exercises?: ExerciseOption[];
@@ -37,6 +41,7 @@ export type PartnerGym = {
   logoUrl?: string | null;
   accentColor: string;
   backgroundColor: string;
+  hoursLabel?: string | null;
 };
 
 export type EquipmentSummary = {
@@ -44,6 +49,7 @@ export type EquipmentSummary = {
   name: string;
   category: string;
   stationCode: string;
+  gymSlug?: string;
 };
 
 export type WorkoutSet = {

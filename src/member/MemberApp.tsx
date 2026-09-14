@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, BackHandler, KeyboardAvoidingView, Linking, Platform, Pressable, RefreshControl,
+  ActivityIndicator, Alert, BackHandler, Image, KeyboardAvoidingView, Linking, Platform, Pressable, RefreshControl,
   ScrollView, Share, StyleSheet, Text, View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -15,7 +15,7 @@ import { Button, Card, Chip, Field, Notice, SectionTitle } from '../ui';
 import { colors, fonts } from '../theme';
 import { supabase } from '../supabase';
 import { scanUrlFromTag } from '../nfc';
-import { deleteMemberAccount, exportMemberData, loadHistory, loadPartnerGyms, machineLinkFromUrl, recordSet, recordTap, resolveMachine } from './api';
+import { deleteMemberAccount, exportMemberData, loadGymEquipment, loadHistory, loadPartnerGyms, machineLinkFromUrl, recordSet, recordTap, resolveMachine } from './api';
 import { saveWorkoutToCloud, workoutMinutes } from './workouts';
 import { ensureMemberSession } from './session';
 import { GymMap, distanceMiles, formatMiles, type Coords } from './GymMap';
@@ -136,7 +136,7 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
   const screen = tab === 'today'
     ? <TodayScreen workout={activeWorkout} finished={finished} recent={recent} onOpen={openMachine} onFinish={finishWorkout} refreshing={refreshing} onRefresh={refresh} />
     : tab === 'scan'
-      ? <ScanScreen onOpen={openMachine} />
+      ? <ScanScreen gyms={gyms} preferences={preferences} onOpen={openMachine} />
       : tab === 'gyms'
         ? <GymsScreen gyms={gyms} preferences={preferences} onPreferences={async (next) => { setPreferences(next); await savePreferences(next); }} onOpen={openMachine} />
         : <ProfileScreen session={session} preferences={preferences} onPreferences={async (next) => { setPreferences(next); await savePreferences(next); }} onSwitchOwner={onSwitchOwner} />;
@@ -185,7 +185,13 @@ function TodayScreen({ workout, finished, recent, onOpen, onFinish, refreshing, 
   );
 }
 
-function ScanScreen({ onOpen }: { onOpen: (id: string) => void }) {
+// Offline fallback only: live gym equipment always comes from the server.
+async function equipmentForGym(gym: PartnerGym) {
+  try { return await loadGymEquipment(gym.id); }
+  catch { return gym.id === VAULT_GYM.id ? VAULT_EQUIPMENT : []; }
+}
+
+function ScanScreen({ gyms, preferences, onOpen }: { gyms: PartnerGym[]; preferences: MemberPreferences; onOpen: (id: string) => void }) {
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -199,9 +205,19 @@ function ScanScreen({ onOpen }: { onOpen: (id: string) => void }) {
     } catch (reason) { setMessage(nfcError(reason)); }
     setBusy(false);
   };
-  const manual = () => {
+  const manual = async () => {
     const value = code.trim().toLowerCase();
-    const matched = VAULT_EQUIPMENT.find((item) => item.stationCode.toLowerCase() === value || item.publicId === value);
+    if (!value) return;
+    setBusy(true); setMessage('');
+    // Preferred gyms first, so a station code shared by two gyms opens the member's own gym.
+    const ordered = [...gyms].sort((a, b) => Number(preferences.favoriteGymIds.includes(b.id)) - Number(preferences.favoriteGymIds.includes(a.id)));
+    let matched: EquipmentSummary | undefined;
+    for (const gym of ordered) {
+      const equipment = await equipmentForGym(gym);
+      matched = equipment.find((item) => item.stationCode.toLowerCase() === value || item.publicId === value);
+      if (matched) break;
+    }
+    setBusy(false);
     if (!matched) return setMessage('Station not found. Try the label code or the machine name printed near the tag.');
     onOpen(matched.publicId);
   };
@@ -219,7 +235,7 @@ function ScanScreen({ onOpen }: { onOpen: (id: string) => void }) {
         <View style={styles.divider}><View style={styles.dividerLine} /><Text style={styles.dividerText}>OR USE THE LABEL</Text><View style={styles.dividerLine} /></View>
         <Card style={styles.formCard}>
           <Field label="Station code" value={code} onChangeText={setCode} autoCapitalize="characters" placeholder="Example: 14 or 16B" returnKeyType="go" onSubmitEditing={manual} />
-          <Button label="Open station" onPress={manual} tone="secondary" disabled={!code.trim()} />
+          <Button label="Open station" onPress={manual} tone="secondary" disabled={!code.trim() || busy} loading={busy} />
         </Card>
         <Notice>{Platform.OS === 'ios' ? 'On iPad or a device without NFC, use the station code printed on the equipment label.' : 'If NFC is unavailable or turned off, use the station code printed on the equipment label.'}</Notice>
       </ScrollView>
@@ -228,30 +244,57 @@ function ScanScreen({ onOpen }: { onOpen: (id: string) => void }) {
 }
 
 function GymsScreen({ gyms, preferences, onPreferences, onOpen }: { gyms: PartnerGym[]; preferences: MemberPreferences; onPreferences: (prefs: MemberPreferences) => void; onOpen: (id: string) => void }) {
-  const [showEquipment, setShowEquipment] = useState(false);
+  const [openGymId, setOpenGymId] = useState<string | null>(null);
+  const [equipmentByGym, setEquipmentByGym] = useState<Record<string, EquipmentSummary[]>>({});
+  const [loadingGymId, setLoadingGymId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [userLocation, setUserLocation] = useState<Coords | null>(null);
   const sortedGyms = gyms
     .map((gym) => ({ gym, miles: userLocation ? distanceMiles(userLocation, gym) : null }))
     .sort((a, b) => (a.miles ?? 0) - (b.miles ?? 0));
-  const visible = VAULT_EQUIPMENT.filter((item) => `${item.name} ${item.stationCode} ${item.category}`.toLowerCase().includes(query.toLowerCase()));
   const toggleGym = (id: string) => {
     const selected = preferences.favoriteGymIds.includes(id);
     onPreferences({ ...preferences, favoriteGymIds: selected ? preferences.favoriteGymIds.filter((item) => item !== id) : [...preferences.favoriteGymIds, id] });
   };
+  const toggleEquipment = async (gym: PartnerGym) => {
+    if (openGymId === gym.id) return setOpenGymId(null);
+    setOpenGymId(gym.id); setQuery('');
+    if (equipmentByGym[gym.id]) return;
+    setLoadingGymId(gym.id);
+    const equipment = await equipmentForGym(gym);
+    setEquipmentByGym((current) => ({ ...current, [gym.id]: equipment }));
+    setLoadingGymId(null);
+  };
   return (
     <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
       <PageHeader title="Partner gyms" action={<BrandMark />} />
-      <GymMap gyms={gyms} userLocation={userLocation} onUserLocation={setUserLocation} onSelectGym={() => setShowEquipment(true)} />
+      <GymMap gyms={gyms} userLocation={userLocation} onUserLocation={setUserLocation} onSelectGym={(gym) => { if (openGymId !== gym.id) toggleEquipment(gym); }} />
       {sortedGyms.map(({ gym, miles }) => {
         const selected = preferences.favoriteGymIds.includes(gym.id);
-        return <View key={gym.id} style={[styles.gymPanel, { backgroundColor: gym.backgroundColor, borderColor: `${gym.accentColor}55` }]}>
-          <View style={styles.gymHead}><View style={[styles.gymLogo, { borderColor: gym.accentColor }]}><Text style={[styles.gymLogoText, { color: gym.accentColor }]}>V</Text></View><View style={styles.flex}><Text style={styles.gymTitle}>{gym.name}</Text><Text style={styles.gymAddress}>{gym.address} · {gym.city}, {gym.region}</Text></View><Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selected }} accessibilityLabel={`${selected ? 'Remove' : 'Add'} ${gym.name} as a preferred gym`} onPress={() => toggleGym(gym.id)} style={[styles.favorite, selected && { backgroundColor: gym.accentColor }]}><Ionicons name={selected ? 'checkmark' : 'add'} size={20} color={selected ? gym.backgroundColor : gym.accentColor} /></Pressable></View>
-          <View style={styles.gymStats}><Text style={styles.gymStat}>{gym.equipmentCount} connected stations</Text><Text style={styles.gymStat}>Open 24/7</Text>{miles !== null ? <Text style={styles.gymStat}>{formatMiles(miles)} away</Text> : null}</View>
-          <View style={styles.gymActions}><Pressable onPress={() => setShowEquipment((value) => !value)} style={styles.gymAction}><Text style={[styles.gymActionText, { color: gym.accentColor }]}>{showEquipment ? 'Hide equipment' : 'View equipment'}</Text><Ionicons name={showEquipment ? 'chevron-up' : 'chevron-down'} size={17} color={gym.accentColor} /></Pressable><Pressable onPress={() => Linking.openURL(`https://maps.apple.com/?q=${encodeURIComponent(gym.name)}&ll=${gym.latitude},${gym.longitude}`)} style={styles.gymAction}><Text style={[styles.gymActionText, { color: gym.accentColor }]}>Directions</Text><Ionicons name="navigate-outline" size={17} color={gym.accentColor} /></Pressable></View>
+        const isOpen = openGymId === gym.id;
+        const allEquipment = equipmentByGym[gym.id] || [];
+        const visible = allEquipment.filter((item) => `${item.name} ${item.stationCode} ${item.category}`.toLowerCase().includes(query.toLowerCase()));
+        const location = [gym.address, [gym.city, gym.region].filter(Boolean).join(', ')].filter(Boolean).join(' · ');
+        return <View key={gym.id} style={styles.equipmentSection}>
+          <View style={[styles.gymPanel, { backgroundColor: gym.backgroundColor, borderColor: `${gym.accentColor}55` }]}>
+            <View style={styles.gymHead}>
+              {gym.logoUrl ? <Image source={{ uri: gym.logoUrl }} style={[styles.gymLogo, styles.gymLogoImage, { borderColor: gym.accentColor }]} accessibilityIgnoresInvertColors /> : <View style={[styles.gymLogo, { borderColor: gym.accentColor }]}><Text style={[styles.gymLogoText, { color: gym.accentColor }]}>{gym.name.trim().charAt(0).toUpperCase()}</Text></View>}
+              <View style={styles.flex}><Text style={styles.gymTitle}>{gym.name}</Text>{location ? <Text style={styles.gymAddress}>{location}</Text> : null}</View>
+              <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selected }} accessibilityLabel={`${selected ? 'Remove' : 'Add'} ${gym.name} as a preferred gym`} onPress={() => toggleGym(gym.id)} style={[styles.favorite, { borderColor: gym.accentColor }, selected && { backgroundColor: gym.accentColor }]}><Ionicons name={selected ? 'checkmark' : 'add'} size={20} color={selected ? gym.backgroundColor : gym.accentColor} /></Pressable>
+            </View>
+            <View style={styles.gymStats}><Text style={styles.gymStat}>{plural(gym.equipmentCount, 'connected station')}</Text>{gym.hoursLabel ? <Text style={styles.gymStat}>{gym.hoursLabel}</Text> : null}{miles !== null ? <Text style={styles.gymStat}>{formatMiles(miles)} away</Text> : null}</View>
+            <View style={styles.gymActions}>
+              <Pressable onPress={() => toggleEquipment(gym)} style={styles.gymAction}><Text style={[styles.gymActionText, { color: gym.accentColor }]}>{isOpen ? 'Hide equipment' : 'View equipment'}</Text><Ionicons name={isOpen ? 'chevron-up' : 'chevron-down'} size={17} color={gym.accentColor} /></Pressable>
+              <Pressable onPress={() => Linking.openURL(Platform.OS === 'ios' ? `https://maps.apple.com/?q=${encodeURIComponent(gym.name)}&ll=${gym.latitude},${gym.longitude}` : `https://www.google.com/maps/search/?api=1&query=${gym.latitude},${gym.longitude}`)} style={styles.gymAction}><Text style={[styles.gymActionText, { color: gym.accentColor }]}>Directions</Text><Ionicons name="navigate-outline" size={17} color={gym.accentColor} /></Pressable>
+            </View>
+          </View>
+          {isOpen ? (loadingGymId === gym.id ? <ActivityIndicator color={colors.lime} /> : <View style={styles.equipmentSection}>
+            <Field label={`Find equipment at ${gym.name}`} value={query} onChangeText={setQuery} placeholder="Machine, category, or station" />
+            <Text style={styles.equipmentCount}>{visible.length} of {plural(allEquipment.length, 'station')}</Text>
+            {allEquipment.length ? <View style={styles.list}>{visible.map((item) => <Pressable key={item.publicId} onPress={() => onOpen(item.publicId)} style={styles.catalogRow}><View style={styles.stationCode}><Text style={styles.stationCodeText}>{item.stationCode}</Text></View><View style={styles.flex}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.rowMeta}>{item.category}</Text></View><Ionicons name="chevron-forward" size={18} color={colors.muted} /></Pressable>)}</View> : <EmptyRow icon="barbell-outline" title="Equipment coming soon" copy={`${gym.name} hasn't connected equipment yet.`} />}
+          </View>) : null}
         </View>;
       })}
-      {showEquipment ? <View style={styles.equipmentSection}><Field label="Find equipment" value={query} onChangeText={setQuery} placeholder="Machine, category, or station" /><Text style={styles.equipmentCount}>{visible.length} of 41 stations</Text><View style={styles.list}>{visible.map((item) => <Pressable key={item.publicId} onPress={() => onOpen(item.publicId)} style={styles.catalogRow}><View style={styles.stationCode}><Text style={styles.stationCodeText}>{item.stationCode}</Text></View><View style={styles.flex}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.rowMeta}>{item.category}</Text></View><Ionicons name="chevron-forward" size={18} color={colors.muted} /></Pressable>)}</View></View> : null}
     </ScrollView>
   );
 }
@@ -384,7 +427,7 @@ function MachineScreen({ link, session, workout, preferences, onBack, onExercise
       const resolved = await resolveMachine(link.publicId, link.exerciseSlug);
       setMachine(resolved); await rememberMachine(resolved); await recordTap(link.publicId, sessionId, session).catch(() => undefined);
       // The first tag tapped starts the workout clock; later taps join the same session.
-      const active = await ensureActiveWorkout(gymIdFor(resolved.gymName), resolved.gymName);
+      const active = await ensureActiveWorkout(resolved.gymSlug || gymIdFor(resolved.gymName), resolved.gymName);
       saveWorkoutToCloud(session, active).catch(() => undefined);
       onWorkoutChanged();
       if (resolved.stationType !== 'multi_exercise' || link.exerciseSlug) setHistory(await loadHistory(link.publicId, sessionId, session, link.exerciseSlug));
@@ -395,7 +438,8 @@ function MachineScreen({ link, session, workout, preferences, onBack, onExercise
   if (loading) return <SafeAreaView style={[styles.safe, styles.centered]}><ActivityIndicator color={colors.lime} size="large" /><Text style={styles.bodyMuted}>Opening station…</Text></SafeAreaView>;
   if (!machine) return <SafeAreaView style={[styles.safe, styles.screen]}><IconBack onPress={onBack} />{message ? <Notice tone="danger">{message}</Notice> : null}<Button label="Try again" onPress={load} /></SafeAreaView>;
   if (machine.stationType === 'multi_exercise' && !link.exerciseSlug) return <ExercisePicker machine={machine} onBack={onBack} onExercise={onExercise} />;
-  const accent = machine.gymName === 'Vault Fitness Club' ? '#F2C44D' : colors.lime;
+  // Branding comes from the gym's record on the server; the name check covers cached responses from older API versions.
+  const accent = machine.accentColor || (machine.gymName === 'Vault Fitness Club' ? '#F2C44D' : colors.lime);
   return <SafeAreaView edges={['top', 'left', 'right']} style={styles.safe}><ScrollView contentContainerStyle={styles.machineScreen} keyboardShouldPersistTaps="handled"><View style={styles.machineNav}><IconBack onPress={onBack} /><View style={[styles.gymChip, { borderColor: `${accent}88` }]}><View style={[styles.gymChipDot, { backgroundColor: accent }]} /><Text style={styles.gymChipText}>{machine.gymName}</Text></View></View>{workout ? <WorkoutTimerBar startedAt={workout.startedAt} gymName={workout.gymName} setCount={workout.sets.length} /> : null}<View><Text style={[styles.machineCategory, { color: accent }]}>{machine.category.toUpperCase()} · STATION {machine.stationCode}</Text><Text style={styles.machineTitle}>{machine.name}</Text>{machine.stationName ? <Text style={styles.bodyMuted}>{machine.stationName}</Text> : null}</View><MachineTabs tab={machineTab} onChange={setMachineTab} accent={accent} historyCount={history.length} />{machineTab === 'log' ? <SetLogger machine={machine} session={session} sessionId={sessionId} preferences={preferences} accent={accent} onSaved={async (item, nextWorkout) => { setHistory((current) => [{ id: item.clientLogId, client_log_id: item.clientLogId, weight_lb: item.weight, reps: item.reps, seat_setting: item.seatSetting, notes: item.notes, occurred_at: item.createdAt }, ...current]); await onWorkoutChanged(nextWorkout); }} /> : machineTab === 'progress' ? <HistoryList history={history} unit={preferences.weightUnit} accent={accent} /> : <View style={styles.howTo}><MachineVideo url={machine.videoUrl} gymName={machine.gymName} accent={accent} /><View><SectionTitle>Steps</SectionTitle><View style={styles.instructions}>{machine.instructions.map((instruction, index) => <View key={`${instruction}-${index}`} style={styles.instruction}><View style={[styles.stepNumber, { backgroundColor: accent }]}><Text style={styles.stepNumberText}>{index + 1}</Text></View><Text style={styles.instructionText}>{instruction}</Text></View>)}</View></View><View><SectionTitle>Muscles worked</SectionTitle><MuscleMap primary={machine.primaryMuscles} assisting={machine.assistingMuscles} accent={accent} /><View style={styles.muscleCopy}><Text style={styles.rowMeta}>PRIMARY</Text><Text style={styles.rowTitle}>{machine.primaryMuscles.join(' · ')}</Text><Text style={[styles.rowMeta, { marginTop: 10 }]}>ASSISTS</Text><Text style={styles.rowTitle}>{machine.assistingMuscles.join(' · ') || '—'}</Text></View></View></View>}</ScrollView></SafeAreaView>;
 }
 
@@ -412,7 +456,7 @@ function SetLogger({ machine, session, sessionId, preferences, accent, onSaved }
     const item: WorkoutSet = { clientLogId: newId(), publicId: machine.publicId, machineName: machine.stationName || machine.name, exerciseSlug: machine.exerciseSlug, exerciseName: machine.name, gymName: machine.gymName, weight: Number(pounds.toFixed(2)), reps: repCount, seatSetting: seat.trim() || null, notes: notes.trim() || null, createdAt: new Date().toISOString(), syncState: 'pending' };
     setBusy(true); setMessage('');
     try {
-      const gymId = gymIdFor(machine.gymName);
+      const gymId = machine.gymSlug || gymIdFor(machine.gymName);
       const workout = await ensureActiveWorkout(gymId, machine.gymName);
       item.workoutSessionId = workout.id;
       const savedWorkout = await appendWorkoutSet(gymId, machine.gymName, item);
@@ -503,6 +547,7 @@ const styles = StyleSheet.create({
   machineTab: { flex: 1, minHeight: 44, borderRadius: 999, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
   machineTabText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 14 }, machineTabTextActive: { color: colors.onLime },
   howTo: { gap: 28 },
+  gymLogoImage: { resizeMode: 'cover' },
   timerDock: { paddingHorizontal: 20, paddingTop: 8 }, workoutClock: { color: colors.lime, fontFamily: fonts.bold, fontSize: 56, lineHeight: 60, letterSpacing: -1.7, fontVariant: ['tabular-nums'] },
   connectText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 13 }, connectTextOn: { color: colors.lime },
   safe: { flex: 1, backgroundColor: colors.forest }, app: { flex: 1 }, flex: { flex: 1 }, centered: { alignItems: 'center', justifyContent: 'center', gap: 16, padding: 24 }, screen: { padding: 20, paddingBottom: 38, gap: 24 }, machineScreen: { padding: 20, paddingBottom: 52, gap: 28 },
