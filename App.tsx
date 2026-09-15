@@ -11,14 +11,15 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
 import { useFonts, SpaceGrotesk_400Regular, SpaceGrotesk_500Medium, SpaceGrotesk_600SemiBold, SpaceGrotesk_700Bold } from '@expo-google-fonts/space-grotesk';
 import type { Session } from '@supabase/supabase-js';
-import Svg, { Polygon } from 'react-native-svg';
 import { assignTag, inviteOwner, loadDashboard, loadMachine, saveMachine, uploadMachineVideo } from './src/api';
+import { sendPasswordReset } from './src/auth';
 import { draftFromCatalog, MACHINE_CATALOG, type CatalogMachine } from './src/catalog';
 import { verifyUrlOnTag, writeUrlToTag } from './src/nfc';
+import { AppTabBar, BrandMark, EmptyRow, IconBack, List, ListRow, PageHeader, SettingRow, SocialSignIn, TextLink, type TabItem } from './src/shell';
 import { supabase } from './src/supabase';
 import { colors, fonts } from './src/theme';
-import type { DashboardData, Machine, MachineDraft, MachineTag, OwnerRole, ProvisioningDraft } from './src/types';
-import { Button, Card, Chip, Eyebrow, Field, Notice, SectionTitle } from './src/ui';
+import type { DashboardData, Machine, MachineDraft, OwnerRole, ProvisioningDraft } from './src/types';
+import { Button, Card, Chip, Field, Notice, SectionTitle } from './src/ui';
 import { MemberApp } from './src/member/MemberApp';
 import { deleteMemberAccount, machineLinkFromUrl } from './src/member/api';
 import { ensureMemberSession } from './src/member/session';
@@ -29,6 +30,15 @@ type AppMode = 'member' | 'owner';
 // `openedAt` makes every tag tap a new value, so tapping the same machine again still reopens it.
 type MachineLink = { publicId: string; exerciseSlug?: string; openedAt?: number };
 const MODE_KEY = 'strictlyvision.app-mode.v1';
+
+const OWNER_TABS: TabItem<Tab>[] = [
+  { id: 'dashboard', label: 'Dashboard', icon: 'grid-outline', active: 'grid' },
+  { id: 'machines', label: 'Machines', icon: 'barbell-outline', active: 'barbell' },
+  { id: 'setup', label: 'Set up', icon: 'add-circle-outline', active: 'add-circle' },
+  { id: 'account', label: 'Account', icon: 'person-outline', active: 'person' }
+];
+// Suggestions only: owners can type any category for a custom machine.
+const CATEGORY_SUGGESTIONS = ['Lower body', 'Chest', 'Back', 'Shoulders', 'Arms', 'Core', 'Cardio', 'Multi-station'];
 
 const blankDraft = (): MachineDraft => ({ name: '', stationCode: '', category: '', status: 'active', primaryMuscles: [], assistingMuscles: [], instructions: [] });
 const csv = (value: string) => value.split(',').map((part) => part.trim()).filter(Boolean);
@@ -88,8 +98,8 @@ function RoleChoiceScreen({ onMember, onOwner }: { onMember: () => void; onOwner
         <Image source={require('./assets/strictlyvision-mark-transparent.png')} style={styles.roleLogo as ImageStyle} resizeMode="contain" />
         <View style={styles.roleIntro}><Text style={styles.roleBrand}>STRICTLYVISION</Text><Text style={styles.roleTitle}>The gym floor,{`\n`}connected to you.</Text><Text style={styles.roleCopy}>Train with any connected machine or manage the system behind your gym.</Text></View>
         <View style={styles.roleActions}>
-          <Pressable accessibilityRole="button" onPress={onMember} style={({ pressed }) => [styles.rolePrimary, pressed && styles.rolePressed]}><View style={styles.roleActionIcon}><Ionicons name="barbell" size={24} color={colors.black} /></View><View style={styles.flex}><Text style={styles.rolePrimaryTitle}>I’m training</Text><Text style={styles.rolePrimaryCopy}>Scan equipment, log sets, and keep your progress.</Text></View><Ionicons name="chevron-forward" size={24} color={colors.black} /></Pressable>
-          <Pressable accessibilityRole="button" onPress={onOwner} style={({ pressed }) => [styles.roleSecondary, pressed && styles.rolePressed]}><View style={styles.roleOwnerIcon}><Ionicons name="business" size={22} color={colors.lime} /></View><View style={styles.flex}><Text style={styles.roleSecondaryTitle}>I manage a gym</Text><Text style={styles.roleSecondaryCopy}>Owner dashboard, equipment, analytics, and NFC setup.</Text></View><Ionicons name="chevron-forward" size={24} color={colors.cream} /></Pressable>
+          <Pressable accessibilityRole="button" onPress={onMember} style={({ pressed }) => [styles.rolePrimary, pressed && styles.pressed]}><View style={styles.roleActionIcon}><Ionicons name="barbell" size={24} color={colors.black} /></View><View style={styles.flex}><Text style={styles.rolePrimaryTitle}>I’m training</Text><Text style={styles.rolePrimaryCopy}>Scan equipment, log sets, and keep your progress.</Text></View><Ionicons name="chevron-forward" size={24} color={colors.black} /></Pressable>
+          <Pressable accessibilityRole="button" onPress={onOwner} style={({ pressed }) => [styles.roleSecondary, pressed && styles.pressed]}><View style={styles.roleOwnerIcon}><Ionicons name="business" size={22} color={colors.lime} /></View><View style={styles.flex}><Text style={styles.roleSecondaryTitle}>I manage a gym</Text><Text style={styles.roleSecondaryCopy}>Owner dashboard, equipment, analytics, and NFC setup.</Text></View><Ionicons name="chevron-forward" size={24} color={colors.cream} /></Pressable>
         </View>
         <Text style={styles.roleFine}>You can switch modes later. Owner tools remain invite-only.</Text>
       </View>
@@ -104,6 +114,8 @@ function OwnerApp({ session, onSwitchMember }: { session: Session; onSwitchMembe
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  // Set when another tab asks Set up to open straight into a custom machine.
+  const [customRequest, setCustomRequest] = useState(0);
 
   const refresh = async (gymId = activeGymId, pull = false) => {
     pull ? setRefreshing(true) : setLoading(true);
@@ -122,18 +134,19 @@ function OwnerApp({ session, onSwitchMember }: { session: Session; onSwitchMembe
   if (error && !data) return <AccessError error={error} onRetry={() => refresh(null)} />;
   if (!data) return null;
 
+  const createCustom = () => { setCustomRequest(Date.now()); setTab('setup'); };
   const body = tab === 'dashboard'
     ? <DashboardScreen data={data} refreshing={refreshing} onRefresh={() => refresh(activeGymId, true)} onStartSetup={() => setTab('setup')} />
     : tab === 'machines'
-      ? <MachinesScreen session={session} data={data} onChanged={() => refresh(activeGymId, true)} onProgram={() => setTab('setup')} />
+      ? <MachinesScreen session={session} data={data} onChanged={() => refresh(activeGymId, true)} onProgram={() => setTab('setup')} onCustom={createCustom} />
       : tab === 'setup'
-        ? <SetupScreen session={session} data={data} onChanged={() => refresh(activeGymId, true)} />
+        ? <SetupScreen session={session} data={data} customRequest={customRequest} onChanged={() => refresh(activeGymId, true)} />
         : <AccountScreen session={session} data={data} onGymChange={(id) => { setActiveGymId(id); refresh(id); }} onSwitchMember={onSwitchMember} />;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <View style={styles.app}>{body}</View>
-      <TabBar tab={tab} setTab={setTab} />
+      <AppTabBar tabs={OWNER_TABS} tab={tab} onChange={setTab} />
     </SafeAreaView>
   );
 }
@@ -151,30 +164,29 @@ function AuthScreen({ onBack }: { onBack: () => void }) {
     setBusy(false);
   };
   const reset = async () => {
-    if (!email.trim()) return setMessage('Enter your email first.');
+    if (!email.includes('@')) return setMessage('Enter your work email above, then tap Forgot password.');
     setBusy(true); setMessage('');
-    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: 'https://strictlyinc.com/owner?mode=reset' });
-    setMessage(error ? error.message : 'Reset email sent. Open it on this phone to choose a new password.');
+    try { await sendPasswordReset(email); setMessage('Password reset email sent. Open the link to choose a new password, then sign in here.'); }
+    catch (reason) { setMessage(reason instanceof Error ? reason.message : 'The reset email could not be sent.'); }
     setBusy(false);
   };
 
   return (
     <SafeAreaView style={styles.safe}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.centered}>
-        <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled">
-          <Pressable onPress={onBack} style={styles.authBack}><Text style={styles.backLink}>‹ Choose mode</Text></Pressable>
-          <StrictlyMark />
-          <Eyebrow>Strictly connected fitness</Eyebrow>
-          <Text style={styles.authTitle}>Owner tools,{`\n`}in your pocket.</Text>
-          <Text style={styles.authCopy}>Program tags, manage equipment, and understand how your floor is being used.</Text>
-          <Card style={styles.authCard}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
+        <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
+          <IconBack onPress={onBack} />
+          <Image source={require('./assets/strictlyvision-mark-transparent.png')} style={styles.roleLogo as ImageStyle} resizeMode="contain" />
+          <View style={styles.gap10}><Text style={styles.roleBrand}>OWNER TOOLS</Text><Text style={styles.authTitle}>Your gym floor,{`\n`}in your pocket.</Text><Text style={styles.bodyMuted}>Program tags, manage equipment, and see how your floor is being used.</Text></View>
+          <Card style={styles.formCard}>
+            <SocialSignIn onMessage={setMessage} disabled={busy} />
             <Field label="Work email" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" autoComplete="email" placeholder="owner@gym.com" />
             <Field label="Password" value={password} onChangeText={setPassword} secureTextEntry autoComplete="current-password" placeholder="Your password" />
             {message ? <Notice tone={/sent/i.test(message) ? 'success' : 'danger'}>{message}</Notice> : null}
             <Button label="Sign in" onPress={signIn} loading={busy} disabled={!email.trim() || !password} />
-            <Pressable onPress={reset}><Text style={styles.textLink}>Forgot password?</Text></Pressable>
+            <TextLink label="Forgot password?" onPress={reset} disabled={busy} />
           </Card>
-          <Text style={styles.authFine}>Owner access is invite-only. Ask Strictly or your gym administrator to approve your account.</Text>
+          <Text style={styles.fine}>Owner access is invite-only. Sign in with the same email your invitation was sent to.</Text>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -187,17 +199,11 @@ function DashboardScreen({ data, refreshing, onRefresh, onStartSetup }: { data: 
   const top = [...data.machines].sort((a, b) => Number(b.taps30Days) - Number(a.taps30Days)).slice(0, 3);
   return (
     <ScrollView contentContainerStyle={styles.screen} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.lime} />}>
-      <View style={styles.header}><View><Eyebrow>Live gym</Eyebrow><Text style={styles.pageTitle}>{data.gym.name}</Text></View><View style={styles.livePill}><View style={styles.liveDot} /><Text style={styles.liveText}>LIVE</Text></View></View>
-      <Card style={styles.heroCard}>
-        <Eyebrow>Today</Eyebrow>
-        <Text style={styles.heroNumber}>{data.summary.tapsToday}</Text>
-        <Text style={styles.heroLabel}>member taps across your floor</Text>
-        <View style={styles.statRow}>
-          <MiniStat value={data.summary.taps7Days} label="7 days" />
-          <MiniStat value={data.summary.activeTagCount} label="active tags" />
-          <MiniStat value={data.summary.machineCount} label="machines" />
-        </View>
-      </Card>
+      <PageHeader title={data.gym.name} action={<View style={styles.liveBadge}><View style={styles.liveDot} /><Text style={styles.liveLabel}>LIVE</Text></View>} />
+      <View style={styles.panel}>
+        <View><Text style={styles.metricLabel}>Today</Text><Text style={styles.heroNumber}>{data.summary.tapsToday}</Text><Text style={styles.bodyMuted}>member taps across your floor</Text></View>
+        <View style={styles.metrics}><Metric value={data.summary.taps7Days} label="7 days" /><Metric value={data.summary.activeTagCount} label="active tags" /><Metric value={data.summary.machineCount} label="machines" /></View>
+      </View>
       <SectionTitle>Last 7 days</SectionTitle>
       <Card>
         <View style={styles.chart}>
@@ -208,15 +214,17 @@ function DashboardScreen({ data, refreshing, onRefresh, onStartSetup }: { data: 
         </View>
       </Card>
       <SectionTitle>Floor pulse</SectionTitle>
-      <Card style={styles.gap12}>
-        {top.length ? top.map((machine, index) => <View key={machine.id} style={styles.rankRow}><Text style={styles.rank}>0{index + 1}</Text><View style={styles.flex}><Text style={styles.machineName}>{machine.name}</Text><Text style={styles.muted}>Station {machine.stationCode}</Text></View><Text style={styles.rankValue}>{machine.taps30Days}<Text style={styles.muted}> taps</Text></Text></View>) : <Text style={styles.muted}>Activity will appear after members begin tapping tags.</Text>}
-      </Card>
-      <Card style={styles.setupCallout}><View style={styles.flex}><Eyebrow>New equipment</Eyebrow><Text style={styles.calloutTitle}>Tag a machine in minutes.</Text><Text style={styles.muted}>Choose equipment, tap the sticker, verify it, and place it on the gym floor.</Text></View><Button label="Start setup" onPress={onStartSetup} /></Card>
+      {top.length ? <List>{top.map((machine, index) => <ListRow key={machine.id} badge={`0${index + 1}`} title={machine.name} meta={`Station ${machine.stationCode}`} trailing={<Text style={styles.rowValue}>{machine.taps30Days}<Text style={styles.rowMetaInline}> taps</Text></Text>} />)}</List> : <EmptyRow icon="pulse-outline" title="No taps yet" copy="Activity will appear after members begin tapping tags." />}
+      <View style={styles.panel}>
+        <View style={styles.panelIcon}><Ionicons name="radio-outline" size={26} color={colors.black} /></View>
+        <View style={styles.gap6}><Text style={styles.panelTitle}>Tag a machine in minutes.</Text><Text style={styles.bodyMuted}>Choose equipment or create your own, tap the sticker, verify it, and place it on the floor.</Text></View>
+        <Button label="Start setup" onPress={onStartSetup} />
+      </View>
     </ScrollView>
   );
 }
 
-function MachinesScreen({ session, data, onChanged, onProgram }: { session: Session; data: DashboardData; onChanged: () => void; onProgram: () => void }) {
+function MachinesScreen({ session, data, onChanged, onProgram, onCustom }: { session: Session; data: DashboardData; onChanged: () => void; onProgram: () => void; onCustom: () => void }) {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Machine | null>(null);
   const [draft, setDraft] = useState<MachineDraft>(blankDraft());
@@ -253,47 +261,46 @@ function MachinesScreen({ session, data, onChanged, onProgram }: { session: Sess
 
   if (selected) return (
     <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
-      <Pressable onPress={() => { setSelected(null); setMessage(''); }}><Text style={styles.backLink}>‹ All machines</Text></Pressable>
-      <Eyebrow>Station {selected.stationCode}</Eyebrow><Text style={styles.pageTitle}>Manage machine</Text>
-      <Card style={styles.formCard}>
-        <Field label="Machine name" value={draft.name} onChangeText={(name) => setDraft({ ...draft, name })} />
-        <View style={styles.twoCol}><View style={styles.flex}><Field label="Station" value={draft.stationCode} onChangeText={(stationCode) => setDraft({ ...draft, stationCode })} /></View><View style={styles.flex}><Field label="Category" value={draft.category} onChangeText={(category) => setDraft({ ...draft, category })} /></View></View>
-        <Field label="Primary muscles" value={draft.primaryMuscles.join(', ')} onChangeText={(value) => setDraft({ ...draft, primaryMuscles: csv(value) })} hint="Separate muscles with commas." />
-        <Field label="Assisting muscles" value={draft.assistingMuscles.join(', ')} onChangeText={(value) => setDraft({ ...draft, assistingMuscles: csv(value) })} />
-        <Field label="Instructions" multiline value={draft.instructions.join('\n')} onChangeText={(value) => setDraft({ ...draft, instructions: lines(value) })} hint="One concise instruction per line." />
-        {message ? <Notice tone={/updated/i.test(message) ? 'success' : 'normal'}>{message}</Notice> : null}
-        <Button label="Save machine" onPress={save} loading={busy} />
-        <Button label={selected.videoUrl ? 'Replace demo video' : 'Upload demo video'} onPress={upload} tone="secondary" disabled={busy} />
-      </Card>
+      <IconBack onPress={() => { setSelected(null); setMessage(''); }} />
+      <View><Text style={styles.kicker}>{selected.category.toUpperCase()} · STATION {selected.stationCode}</Text><Text style={styles.detailTitle}>{selected.name}</Text></View>
+      <MachineForm draft={draft} onChange={setDraft} />
+      {message ? <Notice tone={/updated/i.test(message) ? 'success' : 'normal'}>{message}</Notice> : null}
+      <Button label="Save machine" onPress={save} loading={busy} disabled={!machineReady(draft)} />
+      <Button label={selected.videoUrl ? 'Replace demo video' : 'Upload demo video'} onPress={upload} tone="secondary" disabled={busy} />
       <SectionTitle>Installed tags</SectionTitle>
-      <Card style={styles.gap12}>{selected.tags.length ? selected.tags.map((tag) => <View key={tag.publicId} style={styles.tagRow}><View><Text style={styles.machineName}>{tag.labelCode}</Text><Text style={styles.muted}>{tag.type.toUpperCase()} · {tag.status}</Text></View><Text style={styles.tagCheck}>{tag.status === 'active' ? '✓' : '—'}</Text></View>) : <Text style={styles.muted}>No NFC tag is assigned yet.</Text>}<Button label="Program or replace tag" onPress={onProgram} tone="secondary" /></Card>
+      {selected.tags.length ? <List>{selected.tags.map((tag) => <ListRow key={tag.publicId} icon="radio-outline" title={tag.labelCode} meta={`${tag.type.toUpperCase()} · ${tag.status}`} trailing={<Ionicons name={tag.status === 'active' ? 'checkmark-circle' : 'ellipse-outline'} size={22} color={tag.status === 'active' ? colors.lime : colors.muted} />} />)}</List> : <EmptyRow icon="radio-outline" title="No tag yet" copy="Program a sticker so members can open this machine." />}
+      <Button label="Program or replace tag" onPress={onProgram} tone="secondary" />
     </ScrollView>
   );
 
   return (
     <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
-      <Eyebrow>Equipment catalog</Eyebrow><Text style={styles.pageTitle}>Machines</Text>
+      <PageHeader title="Machines" action={<BrandMark />} />
       <Field label="Search your floor" value={query} onChangeText={setQuery} placeholder="Name, station, or category" />
       {message ? <Notice tone="danger">{message}</Notice> : null}
-      {busy ? <ActivityIndicator color={colors.lime} /> : visible.map((machine) => {
-        const active = machine.tags.some((tag) => tag.status === 'active');
-        return <Pressable key={machine.id} onPress={() => openMachine(machine)}><Card style={styles.machineCard}><View style={styles.machineCode}><Text style={styles.machineCodeText}>{machine.stationCode}</Text></View><View style={styles.flex}><Text style={styles.machineName}>{machine.name}</Text><Text style={styles.muted}>{machine.category} · {machine.taps30Days} taps / 30d</Text></View><View style={[styles.statusDot, active && styles.statusDotActive]} /></Card></Pressable>;
-      })}
-      <Button label="Add or program equipment" onPress={onProgram} />
+      {busy ? <ActivityIndicator color={colors.lime} />
+        : visible.length ? <List>{visible.map((machine) => <ListRow key={machine.id} badge={machine.stationCode} title={machine.name} meta={`${machine.category} · ${machine.taps30Days} taps / 30d`} onPress={() => openMachine(machine)} trailing={<View style={styles.rowTrail}><View style={[styles.statusDot, machine.tags.some((tag) => tag.status === 'active') && styles.statusDotActive]} /><Ionicons name="chevron-forward" size={18} color={colors.muted} /></View>} />)}</List>
+          : <EmptyRow icon="barbell-outline" title={data.machines.length ? 'No matches' : 'No equipment yet'} copy={data.machines.length ? 'Try a different name, station, or category.' : 'Add equipment from the catalog or create a custom machine.'} />}
+      <Button label="Add from catalog" onPress={onProgram} />
+      <Button label="Create custom machine" onPress={onCustom} tone="secondary" />
     </ScrollView>
   );
 }
 
-function SetupScreen({ session, data, onChanged }: { session: Session; data: DashboardData; onChanged: () => void }) {
+function SetupScreen({ session, data, customRequest, onChanged }: { session: Session; data: DashboardData; customRequest: number; onChanged: () => void }) {
   const [stage, setStage] = useState<'choose' | 'details' | 'write' | 'verify' | 'success'>('choose');
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState<MachineDraft>(blankDraft());
+  const [custom, setCustom] = useState(false);
   const [provisioning, setProvisioning] = useState<ProvisioningDraft | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const catalog = MACHINE_CATALOG.filter((item) => `${item.name} ${item.category}`.toLowerCase().includes(query.toLowerCase()));
+  const nextStation = String(data.summary.machineCount + 1).padStart(2, '0');
 
-  const chooseCatalog = (item: CatalogMachine) => { setDraft(draftFromCatalog(item, String(data.summary.machineCount + 1).padStart(2, '0'))); setStage('details'); setMessage(''); };
+  const startCustom = (name = '') => { setDraft({ ...blankDraft(), name, stationCode: nextStation }); setProvisioning(null); setCustom(true); setStage('details'); setMessage(''); };
+  useEffect(() => { if (customRequest) startCustom(); }, [customRequest]);
+  const chooseCatalog = (item: CatalogMachine) => { setDraft(draftFromCatalog(item, nextStation)); setProvisioning(null); setCustom(false); setStage('details'); setMessage(''); };
   const chooseExisting = async (machine: Machine) => {
     setBusy(true); setMessage('');
     try {
@@ -301,8 +308,8 @@ function SetupScreen({ session, data, onChanged }: { session: Session; data: Das
       const full = result.machine;
       setDraft({ machineId: full.id, name: full.name, stationCode: full.stationCode, category: full.category, status: full.status, primaryMuscles: full.primaryMuscles, assistingMuscles: full.assistingMuscles, instructions: full.instructions });
       const tag = full.tags.find((item) => item.status === 'active') || full.tags[0];
-      if (tag) setProvisioning({ machineId: full.id, machineName: full.name, publicId: tag.publicId, labelCode: tag.labelCode, tagType: tag.type, url: `https://strictlyinc.com/t/${tag.publicId}` });
-      setStage('details');
+      setProvisioning(tag ? { machineId: full.id, machineName: full.name, publicId: tag.publicId, labelCode: tag.labelCode, tagType: tag.type, url: `https://strictlyinc.com/t/${tag.publicId}` } : null);
+      setCustom(false); setStage('details');
     } catch (reason) { setMessage(reason instanceof Error ? reason.message : 'Machine could not be loaded.'); }
     setBusy(false);
   };
@@ -336,58 +343,82 @@ function SetupScreen({ session, data, onChanged }: { session: Session; data: Das
     } catch (reason) { setMessage(nfcMessage(reason)); }
     setBusy(false);
   };
-  const restart = () => { setStage('choose'); setDraft(blankDraft()); setProvisioning(null); setMessage(''); setQuery(''); };
+  const restart = () => { setStage('choose'); setDraft(blankDraft()); setProvisioning(null); setCustom(false); setMessage(''); setQuery(''); };
 
-  if (stage === 'choose') return (
-    <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
-      <Eyebrow>NFC setup</Eyebrow><Text style={styles.pageTitle}>Set up a tag</Text><Text style={styles.lead}>Choose an existing station to replace its sticker, or add a new machine from the catalog.</Text>
-      <Field label="Find equipment" value={query} onChangeText={setQuery} placeholder="Try “leg press” or “rack”" />
-      {message ? <Notice tone="danger">{message}</Notice> : null}
-      {busy ? <ActivityIndicator color={colors.lime} /> : null}
-      {!!data.machines.length && <><SectionTitle>Your equipment</SectionTitle>{data.machines.filter((machine) => `${machine.name} ${machine.stationCode}`.toLowerCase().includes(query.toLowerCase())).slice(0, 8).map((machine) => <Pressable key={machine.id} onPress={() => chooseExisting(machine)}><Card style={styles.pickCard}><View><Text style={styles.machineName}>{machine.name}</Text><Text style={styles.muted}>Station {machine.stationCode} · {machine.tags.some((tag) => tag.status === 'active') ? 'Replace or verify tag' : 'Needs tag'}</Text></View><Text style={styles.chevron}>›</Text></Card></Pressable>)}</>}
-      <SectionTitle>Machine catalog</SectionTitle>
-      {catalog.slice(0, 20).map((item) => <Pressable key={item.name} onPress={() => chooseCatalog(item)}><Card style={styles.pickCard}><View><Text style={styles.machineName}>{item.name}</Text><Text style={styles.muted}>{item.category}</Text></View><Text style={styles.chevron}>＋</Text></Card></Pressable>)}
-    </ScrollView>
-  );
+  if (stage === 'choose') {
+    const typed = query.trim();
+    const existing = data.machines.filter((machine) => `${machine.name} ${machine.stationCode}`.toLowerCase().includes(query.toLowerCase())).slice(0, 8);
+    return (
+      <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
+        <PageHeader title="Set up" action={<BrandMark />} />
+        <Text style={styles.bodyMuted}>Replace a sticker on existing equipment, add a machine from the catalog, or create your own.</Text>
+        <Field label="Find equipment" value={query} onChangeText={setQuery} placeholder="Try “leg press” or “rack”" />
+        {message ? <Notice tone="danger">{message}</Notice> : null}
+        {busy ? <ActivityIndicator color={colors.lime} /> : null}
+        <Pressable accessibilityRole="button" onPress={() => startCustom(typed)}><SettingRow icon="create-outline" title="Create a custom machine" copy={typed ? `Name it “${typed}” and add your own details` : 'For equipment that isn’t in the catalog'} chevron /></Pressable>
+        {existing.length ? <><SectionTitle>Your equipment</SectionTitle><List>{existing.map((machine) => <ListRow key={machine.id} badge={machine.stationCode} title={machine.name} meta={machine.tags.some((tag) => tag.status === 'active') ? 'Replace or verify tag' : 'Needs tag'} onPress={() => chooseExisting(machine)} />)}</List></> : null}
+        <SectionTitle>Machine catalog</SectionTitle>
+        {catalog.length ? <List>{catalog.slice(0, 20).map((item) => <ListRow key={item.name} icon="barbell-outline" title={item.name} meta={item.category} onPress={() => chooseCatalog(item)} trailing={<Ionicons name="add" size={22} color={colors.lime} />} />)}</List>
+          : <EmptyRow icon="search-outline" title="Not in the catalog" copy="Create a custom machine above with your own name and details." />}
+      </ScrollView>
+    );
+  }
 
   if (stage === 'details') return (
     <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
-      <Pressable onPress={restart}><Text style={styles.backLink}>‹ Equipment</Text></Pressable><Eyebrow>Step 1 of 3</Eyebrow><Text style={styles.pageTitle}>Confirm station</Text>
-      <Card style={styles.formCard}>
-        <Field label="Machine name" value={draft.name} onChangeText={(name) => setDraft({ ...draft, name })} />
-        <View style={styles.twoCol}><View style={styles.flex}><Field label="Station code" value={draft.stationCode} onChangeText={(stationCode) => setDraft({ ...draft, stationCode })} placeholder="08 or A3" /></View><View style={styles.flex}><Field label="Category" value={draft.category} onChangeText={(category) => setDraft({ ...draft, category })} /></View></View>
-        <Field label="Primary muscles" value={draft.primaryMuscles.join(', ')} onChangeText={(value) => setDraft({ ...draft, primaryMuscles: csv(value) })} />
-        <Notice>The station code can contain letters or numbers. Strictly uses it on labels and in your dashboard.</Notice>
-        {message ? <Notice tone="danger">{message}</Notice> : null}
-        <Button label={provisioning ? 'Continue to reprogram' : 'Save and prepare tag'} onPress={prepare} loading={busy} disabled={!draft.name || !draft.stationCode || !draft.category || !draft.primaryMuscles.length} />
-      </Card>
+      <IconBack onPress={restart} />
+      <View><Text style={styles.kicker}>STEP 1 OF 3</Text><Text style={styles.detailTitle}>{custom ? 'Custom machine' : draft.machineId ? 'Confirm station' : 'Add machine'}</Text>{custom ? <Text style={styles.bodyMuted}>Name it the way your members know it. You can edit these details later from Machines.</Text> : null}</View>
+      <MachineForm draft={draft} onChange={setDraft} showSuggestions={custom} />
+      <Notice>The station code can contain letters or numbers. Strictly uses it on labels and in your dashboard.</Notice>
+      {message ? <Notice tone="danger">{message}</Notice> : null}
+      <Button label={provisioning ? 'Continue to reprogram' : 'Save and prepare tag'} onPress={prepare} loading={busy} disabled={!machineReady(draft)} />
     </ScrollView>
   );
 
   if (!provisioning) return null;
   if (stage === 'write' || stage === 'verify') return (
     <ScrollView contentContainerStyle={styles.screen}>
-      <Pressable onPress={() => setStage('details')}><Text style={styles.backLink}>‹ Station details</Text></Pressable><Eyebrow>Step {stage === 'write' ? '2' : '3'} of 3</Eyebrow><Text style={styles.pageTitle}>{stage === 'write' ? 'Program sticker' : 'Verify sticker'}</Text>
-      <Card style={styles.nfcCard}>
-        <View style={styles.nfcWaves}><Text style={styles.nfcIcon}>)))</Text></View>
+      <IconBack onPress={() => setStage('details')} />
+      <View><Text style={styles.kicker}>STEP {stage === 'write' ? '2' : '3'} OF 3</Text><Text style={styles.detailTitle}>{stage === 'write' ? 'Program sticker' : 'Verify sticker'}</Text></View>
+      <View style={[styles.panel, styles.nfcPanel]}>
+        <View style={styles.rings}><View style={styles.ringsInner}><Ionicons name="phone-portrait-outline" size={40} color={colors.lime} /></View></View>
         <Text style={styles.nfcTitle}>{provisioning.machineName}</Text><Text style={styles.nfcStation}>STATION {draft.stationCode} · {provisioning.labelCode}</Text>
         <View style={styles.urlBox}><Text numberOfLines={2} style={styles.urlText}>{provisioning.url}</Text></View>
-        <Text style={styles.nfcHelp}>{stage === 'write' ? 'Hold the top of your phone directly against the center of the blank NTAG215 sticker. Keep it still until your phone confirms the write.' : 'Tap the same sticker one more time. Strictly checks that it opens the correct machine before marking it active.'}</Text>
+        <Text style={styles.centerCopy}>{stage === 'write' ? 'Hold the top of your phone directly against the center of the blank NTAG215 sticker. Keep it still until your phone confirms the write.' : 'Tap the same sticker one more time. Strictly checks that it opens the correct machine before marking it active.'}</Text>
         {message ? <Notice tone={/successfully/i.test(message) ? 'success' : 'normal'}>{message}</Notice> : null}
         <Button label={stage === 'write' ? 'Write NFC tag' : 'Verify and activate'} onPress={stage === 'write' ? write : verify} loading={busy} />
         {stage === 'verify' ? <Button label="Write again" onPress={() => setStage('write')} tone="secondary" disabled={busy} /> : null}
-      </Card>
+      </View>
       <Notice>iPhone can write NDEF-ready NTAG215 stickers. If a completely blank sticker is not recognized, format it once with an NFC utility, then return here.</Notice>
     </ScrollView>
   );
 
   return (
     <ScrollView contentContainerStyle={[styles.screen, styles.successScreen]}>
-      <View style={styles.successCircle}><Text style={styles.successCheck}>✓</Text></View><Eyebrow>Ready for the floor</Eyebrow><Text style={styles.successTitle}>{provisioning.machineName} is live.</Text><Text style={styles.leadCentered}>Place the sticker where a member can comfortably tap a phone before their set.</Text>
-      <Card style={styles.successDetails}><MiniStat value={draft.stationCode} label="station" /><MiniStat value="NTAG215" label="tag" /><MiniStat value="Verified" label="status" /></Card>
+      <View style={styles.successCircle}><Ionicons name="checkmark" size={52} color={colors.black} /></View>
+      <View style={styles.gap10}><Text style={[styles.kicker, styles.center]}>READY FOR THE FLOOR</Text><Text style={styles.successTitle}>{provisioning.machineName} is live.</Text><Text style={styles.centerCopy}>Place the sticker where a member can comfortably tap a phone before their set.</Text></View>
+      <View style={[styles.panel, styles.metrics]}><Metric value={draft.stationCode} label="station" /><Metric value="NTAG215" label="tag" /><Metric value="Verified" label="status" /></View>
       <Button label="Open member page" onPress={() => Linking.openURL(provisioning.url)} />
       <Button label="Set up another tag" onPress={restart} tone="secondary" />
     </ScrollView>
+  );
+}
+
+// Every machine field the server requires; shared by catalog, custom, and edit flows.
+function machineReady(draft: MachineDraft) {
+  return draft.name.trim().length >= 2 && draft.category.trim().length >= 2 && !!draft.stationCode.trim() && draft.primaryMuscles.length > 0;
+}
+
+function MachineForm({ draft, onChange, showSuggestions }: { draft: MachineDraft; onChange: (draft: MachineDraft) => void; showSuggestions?: boolean }) {
+  return (
+    <Card style={styles.formCard}>
+      <Field label="Machine name" value={draft.name} onChangeText={(name) => onChange({ ...draft, name })} placeholder="Example: Vault Belt Squat" maxLength={100} />
+      <View style={styles.twoCol}><View style={styles.flex}><Field label="Station code" value={draft.stationCode} onChangeText={(stationCode) => onChange({ ...draft, stationCode })} placeholder="08 or A3" autoCapitalize="characters" maxLength={24} /></View><View style={styles.flex}><Field label="Category" value={draft.category} onChangeText={(category) => onChange({ ...draft, category })} placeholder="Lower body" maxLength={60} /></View></View>
+      {showSuggestions ? <View style={styles.chips}>{CATEGORY_SUGGESTIONS.map((item) => <Chip key={item} label={item} selected={draft.category === item} onPress={() => onChange({ ...draft, category: item })} />)}</View> : null}
+      <Field label="Primary muscles" value={draft.primaryMuscles.join(', ')} onChangeText={(value) => onChange({ ...draft, primaryMuscles: csv(value) })} placeholder="Quadriceps, Glutes" hint="Separate muscles with commas. At least one is required." />
+      <Field label="Assisting muscles · optional" value={draft.assistingMuscles.join(', ')} onChangeText={(value) => onChange({ ...draft, assistingMuscles: csv(value) })} placeholder="Hamstrings, Core" />
+      <Field label="Instructions · optional" multiline value={draft.instructions.join('\n')} onChangeText={(value) => onChange({ ...draft, instructions: lines(value) })} placeholder={'Set the seat height.\nBrace before each rep.'} hint="One short step per line. Members see these under How to." />
+    </Card>
   );
 }
 
@@ -414,45 +445,47 @@ function AccountScreen({ session, data, onGymChange, onSwitchMember }: { session
   ]);
   return (
     <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
-      <Eyebrow>Account</Eyebrow><Text style={styles.pageTitle}>Owner settings</Text>
-      <Card style={styles.gap12}><Text style={styles.machineName}>{session.user.email}</Text><Text style={styles.muted}>{data.access.role.toUpperCase()} · {data.gym.name}</Text></Card>
+      <PageHeader title="Account" action={<BrandMark />} />
+      <View style={styles.identity}><View style={styles.avatar}><Ionicons name="business" size={24} color={colors.lime} /></View><View style={styles.flex}><Text style={styles.identityName}>{session.user.email}</Text><Text style={styles.bodyMuted}>{data.access.role.charAt(0).toUpperCase() + data.access.role.slice(1)} · {data.gym.name}</Text></View></View>
       {data.accessibleGyms.length > 1 ? <><SectionTitle>Your gyms</SectionTitle><View style={styles.chips}>{data.accessibleGyms.map((gym) => <Chip key={gym.id} label={gym.name} selected={gym.id === data.gym.id} onPress={() => onGymChange(gym.id)} />)}</View></> : null}
-      {data.access.role === 'owner' ? <><SectionTitle>Invite your team</SectionTitle><Card style={styles.formCard}><Text style={styles.muted}>Only approved accounts can enter the owner app. Invite a manager or read-only viewer here.</Text><Field label="Email address" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" placeholder="manager@gym.com" /><View style={styles.chips}>{(['manager', 'viewer', 'owner'] as OwnerRole[]).map((item) => <Chip key={item} label={item} selected={role === item} onPress={() => setRole(item)} />)}</View>{message ? <Notice tone={/sent|assigned|updated/i.test(message) ? 'success' : 'danger'}>{message}</Notice> : null}<Button label="Send owner invite" onPress={sendInvite} loading={busy} disabled={!email.includes('@')} /></Card></> : null}
-      <SectionTitle>Support & legal</SectionTitle><Card style={styles.gap12}><Button label="Email Strictly support" onPress={() => Linking.openURL('mailto:getstrictly@gmail.com?subject=StrictlyNFC%20Owner%20Support')} tone="secondary" /><Button label="Open web dashboard" onPress={() => Linking.openURL('https://strictlyinc.com/owner')} tone="secondary" /><Button label="Privacy policy" onPress={() => Linking.openURL('https://strictlyinc.com/privacy')} tone="secondary" /><Button label="Terms of service" onPress={() => Linking.openURL('https://strictlyinc.com/terms')} tone="secondary" /></Card>
-      <Button label="Switch to member mode" onPress={onSwitchMember} tone="secondary" />
-      <Button label="Sign out" onPress={() => supabase.auth.signOut()} tone="danger" />
+      {data.access.role === 'owner' ? <><SectionTitle>Invite your team</SectionTitle><Card style={styles.formCard}><Text style={styles.bodyMuted}>Only approved accounts can enter owner tools. Invite a manager or read-only viewer here.</Text><Field label="Email address" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" placeholder="manager@gym.com" /><View style={styles.chips}>{(['manager', 'viewer', 'owner'] as OwnerRole[]).map((item) => <Chip key={item} label={item.charAt(0).toUpperCase() + item.slice(1)} selected={role === item} onPress={() => setRole(item)} />)}</View>{message ? <Notice tone={/sent|assigned|updated/i.test(message) ? 'success' : 'danger'}>{message}</Notice> : null}<Button label="Send owner invite" onPress={sendInvite} loading={busy} disabled={!email.includes('@')} /></Card></> : null}
+      <SectionTitle>Support & legal</SectionTitle>
+      <Pressable onPress={() => Linking.openURL('mailto:getstrictly@gmail.com?subject=StrictlyVision%20Owner%20Support')}><SettingRow icon="mail-outline" title="Email Strictly support" chevron /></Pressable>
+      <Pressable onPress={() => Linking.openURL('https://strictlyinc.com/owner')}><SettingRow icon="globe-outline" title="Open web dashboard" copy="strictlyinc.com/owner" chevron /></Pressable>
+      <Pressable onPress={() => Linking.openURL('https://strictlyinc.com/privacy')}><SettingRow icon="shield-checkmark-outline" title="Privacy" chevron /></Pressable>
+      <Pressable onPress={() => Linking.openURL('https://strictlyinc.com/terms')}><SettingRow icon="document-text-outline" title="Terms of service" chevron /></Pressable>
+      <SectionTitle>App</SectionTitle>
+      <Pressable onPress={onSwitchMember}><SettingRow icon="barbell-outline" title="Switch to member mode" copy="Scan equipment and log your own sets" chevron /></Pressable>
+      <Button label="Sign out" onPress={() => supabase.auth.signOut()} tone="secondary" disabled={accountBusy} />
       <Button label="Delete account" onPress={deleteAccount} tone="danger" loading={accountBusy} disabled={accountBusy} />
     </ScrollView>
   );
 }
 
-function TabBar({ tab, setTab }: { tab: Tab; setTab: (tab: Tab) => void }) {
-  const tabs: { id: Tab; label: string; icon: string }[] = [{ id: 'dashboard', label: 'Dashboard', icon: '▦' }, { id: 'machines', label: 'Machines', icon: '▤' }, { id: 'setup', label: 'Set up', icon: '⌁' }, { id: 'account', label: 'Account', icon: '○' }];
-  return <SafeAreaView edges={['bottom']} style={styles.tabSafe}><View style={styles.tabs}>{tabs.map((item) => <Pressable key={item.id} onPress={() => setTab(item.id)} style={[styles.tab, tab === item.id && styles.tabActive]}><Text style={[styles.tabIcon, tab === item.id && styles.tabIconActive]}>{item.icon}</Text><Text style={[styles.tabLabel, tab === item.id && styles.tabLabelActive]}>{item.label}</Text></Pressable>)}</View></SafeAreaView>;
-}
-
-function MiniStat({ value, label }: { value: string | number; label: string }) { return <View style={styles.miniStat}><Text style={styles.miniValue}>{value}</Text><Text style={styles.miniLabel}>{label}</Text></View>; }
-function StrictlyMark() { return <View style={styles.mark}><Svg width="42" height="48" viewBox="0 0 100 113.2"><Polygon points="61.4,0 100,0 82.6,16.4 68.5,16.5 25.1,55.5 25,63 33.1,63.3 65.7,34.4 93.2,34.2 93.3,63.7 38.6,113.2 0,113.2 17.4,96.8 31.5,96.7 74.9,57.7 75,50.2 66.9,49.9 34.3,78.8 6.8,79 6.7,49.5" fill={colors.cream} /></Svg></View>; }
-function Loading({ label }: { label: string }) { return <SafeAreaView style={[styles.safe, styles.loading]}><StrictlyMark /><ActivityIndicator color={colors.lime} size="large" /><Text style={styles.muted}>{label}</Text></SafeAreaView>; }
-function AccessError({ error, onRetry }: { error: string; onRetry: () => void }) { return <SafeAreaView style={[styles.safe, styles.centered]}><View style={styles.errorWrap}><Eyebrow>Access needs attention</Eyebrow><Text style={styles.pageTitle}>This account is not assigned to a gym.</Text><Notice tone="danger">{error}</Notice><Button label="Try again" onPress={onRetry} /><Button label="Sign out" onPress={() => supabase.auth.signOut()} tone="secondary" /></View></SafeAreaView>; }
+function Metric({ value, label }: { value: string | number; label: string }) { return <View style={styles.metric}><Text style={styles.metricValue}>{value}</Text><Text style={styles.metricLabel}>{label}</Text></View>; }
+function Loading({ label }: { label: string }) { return <SafeAreaView style={[styles.safe, styles.loading]}><Image source={require('./assets/strictlyvision-mark-transparent.png')} style={styles.roleLogo as ImageStyle} resizeMode="contain" /><ActivityIndicator color={colors.lime} size="large" /><Text style={styles.bodyMuted}>{label}</Text></SafeAreaView>; }
+function AccessError({ error, onRetry }: { error: string; onRetry: () => void }) { return <SafeAreaView style={styles.safe}><View style={[styles.screen, styles.errorWrap]}><Text style={styles.kicker}>ACCESS NEEDS ATTENTION</Text><Text style={styles.detailTitle}>This account isn’t assigned to a gym.</Text><Notice tone="danger">{error}</Notice><Text style={styles.bodyMuted}>If you signed in with Apple or Google, make sure it uses the same email your invitation was sent to.</Text><Button label="Try again" onPress={onRetry} /><Button label="Sign out" onPress={() => supabase.auth.signOut()} tone="secondary" /></View></SafeAreaView>; }
 function nfcMessage(reason: unknown) { const raw = reason instanceof Error ? reason.message : 'The tag could not be read.'; if (/cancel|invalidate/i.test(raw)) return 'NFC scan canceled. Your setup is saved, so you can try again.'; if (/NDEF|tech|tag/i.test(raw)) return `${raw} Make sure this is an unlocked, NDEF-compatible NTAG215 sticker.`; return raw; }
 
+// Values mirror the member screens (src/member/MemberApp.tsx) so both modes share one visual system.
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.forest }, app: { flex: 1 }, screen: { padding: 20, paddingBottom: 36, gap: 18 },
-  loading: { alignItems: 'center', justifyContent: 'center', gap: 18 }, centered: { flex: 1, justifyContent: 'center' }, errorWrap: { padding: 24, gap: 18 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, pageTitle: { color: colors.cream, fontSize: 36, lineHeight: 40, fontFamily: fonts.bold, marginTop: 5 , letterSpacing: -1.1 },
-  livePill: { flexDirection: 'row', gap: 7, alignItems: 'center', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: colors.panel }, liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.mint }, liveText: { color: colors.mint, fontSize: 11, fontFamily: fonts.bold, letterSpacing: 1 },
-  mark: { width: 66, height: 66, borderRadius: 16, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center' },
-  authScroll: { padding: 26, paddingTop: 56, gap: 18 }, authTitle: { color: colors.cream, fontSize: 46, lineHeight: 48, fontFamily: fonts.bold , letterSpacing: -1.4 }, authCopy: { fontFamily: fonts.regular, color: colors.muted, fontSize: 18, lineHeight: 27 }, authCard: { gap: 16, marginTop: 8 }, authFine: { fontFamily: fonts.regular, color: colors.muted, fontSize: 12, lineHeight: 18, textAlign: 'center' }, textLink: { color: colors.lime, fontFamily: fonts.bold, textAlign: 'center', padding: 8 },
-  heroCard: { backgroundColor: colors.black, padding: 22 }, heroNumber: { color: colors.cream, fontSize: 72, lineHeight: 80, fontFamily: fonts.bold, marginTop: 10 , letterSpacing: -2.2 }, heroLabel: { fontFamily: fonts.regular, color: colors.muted, fontSize: 17 }, statRow: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: colors.border, marginTop: 20, paddingTop: 18 }, miniStat: { flex: 1, gap: 3 }, miniValue: { color: colors.cream, fontSize: 19, fontFamily: fonts.bold }, miniLabel: { fontFamily: fonts.regular, color: colors.muted, fontSize: 11, textTransform: 'uppercase', letterSpacing: .8 },
-  chart: { height: 168, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: 7 }, barColumn: { flex: 1, alignItems: 'center', justifyContent: 'flex-end', gap: 6 }, bar: { width: '72%', maxWidth: 28, borderRadius: 10, backgroundColor: colors.lime }, barValue: { color: colors.cream, fontSize: 10, fontFamily: fonts.bold }, barLabel: { fontFamily: fonts.regular, color: colors.muted, fontSize: 11 },
-  gap12: { gap: 12 }, flex: { flex: 1 }, rankRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 5 }, rank: { color: colors.lime, fontFamily: fonts.bold, fontSize: 13 }, rankValue: { color: colors.cream, fontFamily: fonts.bold }, machineName: { color: colors.cream, fontSize: 17, fontFamily: fonts.bold }, muted: { fontFamily: fonts.regular, color: colors.muted, fontSize: 13, lineHeight: 19 },
-  setupCallout: { gap: 18, backgroundColor: colors.panelRaised }, calloutTitle: { color: colors.cream, fontSize: 25, fontFamily: fonts.bold, marginVertical: 7 , letterSpacing: -0.8 }, lead: { fontFamily: fonts.regular, color: colors.muted, fontSize: 17, lineHeight: 25 }, leadCentered: { fontFamily: fonts.regular, color: colors.muted, fontSize: 17, lineHeight: 25, textAlign: 'center' },
-  backLink: { color: colors.lime, fontSize: 16, fontFamily: fonts.bold, paddingVertical: 5 }, formCard: { gap: 16 }, twoCol: { flexDirection: 'row', gap: 12 }, tagRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 10, borderBottomColor: colors.border, borderBottomWidth: 1 }, tagCheck: { color: colors.mint, fontSize: 22, fontFamily: fonts.bold },
-  machineCard: { flexDirection: 'row', alignItems: 'center', gap: 13, padding: 14 }, machineCode: { width: 49, height: 49, borderRadius: 15, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center' }, machineCodeText: { color: colors.lime, fontFamily: fonts.bold }, statusDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.danger }, statusDotActive: { backgroundColor: colors.mint },
-  pickCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 14 }, chevron: { color: colors.lime, fontSize: 28, fontFamily: fonts.medium }, chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  nfcCard: { alignItems: 'stretch', gap: 18, padding: 22 }, nfcWaves: { width: 80, height: 80, borderRadius: 40, backgroundColor: colors.lime, alignSelf: 'center', alignItems: 'center', justifyContent: 'center' }, nfcIcon: { color: colors.black, fontSize: 25, fontFamily: fonts.bold, letterSpacing: -0.8 }, nfcTitle: { color: colors.cream, fontSize: 29, fontFamily: fonts.bold, textAlign: 'center' , letterSpacing: -0.9 }, nfcStation: { color: colors.mint, fontSize: 12, fontFamily: fonts.bold, letterSpacing: 1.4, textAlign: 'center' }, urlBox: { backgroundColor: colors.black, padding: 14, borderRadius: 14 }, urlText: { fontFamily: fonts.regular, color: colors.cream, textAlign: 'center', fontSize: 13 }, nfcHelp: { fontFamily: fonts.regular, color: colors.muted, textAlign: 'center', fontSize: 16, lineHeight: 24 },
-  successScreen: { alignItems: 'stretch', justifyContent: 'center', minHeight: '100%' }, successCircle: { alignSelf: 'center', width: 96, height: 96, borderRadius: 48, backgroundColor: colors.mint, alignItems: 'center', justifyContent: 'center' }, successCheck: { color: colors.black, fontSize: 48, fontFamily: fonts.bold , letterSpacing: -1.4 }, successTitle: { color: colors.cream, fontSize: 35, lineHeight: 41, fontFamily: fonts.bold, textAlign: 'center' , letterSpacing: -1.1 }, successDetails: { flexDirection: 'row' },
-  tabSafe: { backgroundColor: colors.black, borderTopWidth: 1, borderTopColor: colors.border }, tabs: { height: 67, flexDirection: 'row', paddingHorizontal: 8, gap: 4 }, tab: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 3, borderRadius: 16, marginVertical: 6 }, tabActive: { backgroundColor: colors.panelRaised }, tabIcon: { fontFamily: fonts.regular, color: colors.muted, fontSize: 19 }, tabIconActive: { color: colors.lime }, tabLabel: { color: colors.muted, fontSize: 10, fontFamily: fonts.semibold }, tabLabelActive: { color: colors.cream },
-  roleScreen: { flex: 1, padding: 24, paddingTop: 38, paddingBottom: 22, justifyContent: 'space-between' }, roleLogo: { width: 64, height: 64 }, roleIntro: { gap: 14, marginTop: 'auto', marginBottom: 34 }, roleBrand: { color: colors.dim, fontSize: 12, lineHeight: 16, fontFamily: fonts.bold, letterSpacing: 2.2 }, roleTitle: { color: colors.cream, fontSize: 43, lineHeight: 46, fontFamily: fonts.bold, letterSpacing: -1.3 }, roleCopy: { fontFamily: fonts.regular, color: colors.muted, fontSize: 17, lineHeight: 25, maxWidth: 430 }, roleActions: { gap: 12 }, rolePrimary: { minHeight: 102, borderRadius: 16, padding: 16, backgroundColor: colors.lime, flexDirection: 'row', alignItems: 'center', gap: 13 }, roleActionIcon: { width: 48, height: 48, borderRadius: 15, backgroundColor: 'rgba(7,10,2,0.12)', alignItems: 'center', justifyContent: 'center' }, roleActionIconText: { color: colors.black, fontSize: 24, fontFamily: fonts.bold , letterSpacing: -0.7 }, rolePrimaryTitle: { color: colors.black, fontSize: 19, fontFamily: fonts.bold }, rolePrimaryCopy: { fontFamily: fonts.regular, color: '#2B3510', fontSize: 12, lineHeight: 17, marginTop: 3 }, roleArrowDark: { fontFamily: fonts.regular, color: colors.black, fontSize: 30 }, roleSecondary: { minHeight: 102, borderRadius: 16, padding: 16, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, flexDirection: 'row', alignItems: 'center', gap: 13 }, roleOwnerIcon: { width: 48, height: 48, borderRadius: 15, backgroundColor: colors.panelRaised, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, roleOwnerIconText: { color: colors.lime, fontSize: 19, fontFamily: fonts.bold }, roleSecondaryTitle: { color: colors.cream, fontSize: 19, fontFamily: fonts.bold }, roleSecondaryCopy: { fontFamily: fonts.regular, color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 3 }, roleArrowLight: { fontFamily: fonts.regular, color: colors.cream, fontSize: 30 }, rolePressed: { opacity: .88, transform: [{ scale: .99 }] }, roleFine: { fontFamily: fonts.regular, color: colors.muted, fontSize: 11, lineHeight: 16, textAlign: 'center', marginTop: 17 }, authBack: { alignSelf: 'flex-start' }
+  safe: { flex: 1, backgroundColor: colors.bg }, app: { flex: 1 }, flex: { flex: 1 }, center: { textAlign: 'center' },
+  screen: { padding: 20, paddingBottom: 38, gap: 24 }, loading: { alignItems: 'center', justifyContent: 'center', gap: 18 }, errorWrap: { flex: 1, justifyContent: 'center', gap: 16 },
+  gap6: { gap: 6 }, gap10: { gap: 10 }, twoCol: { flexDirection: 'row', gap: 12 }, chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, formCard: { gap: 16 },
+  bodyMuted: { fontFamily: fonts.regular, color: colors.muted, fontSize: 15, lineHeight: 22 }, centerCopy: { fontFamily: fonts.regular, color: colors.muted, fontSize: 15, lineHeight: 22, textAlign: 'center' },
+  kicker: { color: colors.dim, fontSize: 11, lineHeight: 16, fontFamily: fonts.bold, letterSpacing: 1.2 }, detailTitle: { color: colors.text, fontSize: 38, lineHeight: 42, fontFamily: fonts.bold, letterSpacing: -1.1, marginTop: 5 },
+  fine: { fontFamily: fonts.regular, color: colors.muted, fontSize: 12, lineHeight: 18, textAlign: 'center' }, authTitle: { color: colors.text, fontSize: 40, lineHeight: 44, fontFamily: fonts.bold, letterSpacing: -1.2 },
+  pressed: { opacity: .88, transform: [{ scale: .99 }] },
+  liveBadge: { flexDirection: 'row', gap: 7, alignItems: 'center', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 999, backgroundColor: colors.surface }, liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.lime }, liveLabel: { color: colors.lime, fontSize: 10, fontFamily: fonts.bold, letterSpacing: 1 },
+  panel: { borderRadius: 16, backgroundColor: colors.black, padding: 20, gap: 18 }, panelIcon: { width: 52, height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.lime }, panelTitle: { color: colors.text, fontSize: 24, lineHeight: 29, fontFamily: fonts.bold, letterSpacing: -0.7 },
+  heroNumber: { color: colors.lime, fontFamily: fonts.bold, fontSize: 56, lineHeight: 62, letterSpacing: -1.7, fontVariant: ['tabular-nums'] },
+  metrics: { flexDirection: 'row', borderTopWidth: 1, borderColor: colors.border, paddingTop: 16 }, metric: { flex: 1, gap: 3 }, metricValue: { color: colors.text, fontSize: 21, fontFamily: fonts.bold }, metricLabel: { fontFamily: fonts.regular, color: colors.muted, fontSize: 10, textTransform: 'uppercase', letterSpacing: .7 },
+  chart: { height: 168, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: 7 }, barColumn: { flex: 1, alignItems: 'center', justifyContent: 'flex-end', gap: 6 }, bar: { width: '72%', maxWidth: 28, borderRadius: 7, backgroundColor: colors.lime }, barValue: { color: colors.text, fontSize: 10, fontFamily: fonts.bold }, barLabel: { fontFamily: fonts.regular, color: colors.muted, fontSize: 11 },
+  rowValue: { color: colors.text, fontSize: 15, fontFamily: fonts.semibold }, rowMetaInline: { fontFamily: fonts.regular, color: colors.muted, fontSize: 12 }, rowTrail: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  statusDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: colors.danger }, statusDotActive: { backgroundColor: colors.lime },
+  nfcPanel: { borderWidth: 1, borderColor: colors.border }, rings: { alignSelf: 'center', width: 136, height: 136, borderRadius: 68, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, ringsInner: { width: 94, height: 94, borderRadius: 47, borderWidth: 1, borderColor: colors.lime, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center' },
+  nfcTitle: { color: colors.text, fontSize: 26, fontFamily: fonts.bold, textAlign: 'center', letterSpacing: -0.8 }, nfcStation: { color: colors.lime, fontSize: 11, fontFamily: fonts.bold, letterSpacing: 1.2, textAlign: 'center' }, urlBox: { backgroundColor: colors.surface, padding: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.border }, urlText: { fontFamily: fonts.regular, color: colors.text, textAlign: 'center', fontSize: 13 },
+  successScreen: { justifyContent: 'center', minHeight: '100%' }, successCircle: { alignSelf: 'center', width: 96, height: 96, borderRadius: 48, backgroundColor: colors.lime, alignItems: 'center', justifyContent: 'center' }, successTitle: { color: colors.text, fontSize: 34, lineHeight: 40, fontFamily: fonts.bold, textAlign: 'center', letterSpacing: -1.0 },
+  identity: { flexDirection: 'row', gap: 14, alignItems: 'center' }, avatar: { width: 58, height: 58, borderRadius: 16, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, identityName: { color: colors.text, fontSize: 19, fontFamily: fonts.bold },
+  roleScreen: { flex: 1, padding: 24, paddingTop: 38, paddingBottom: 22, justifyContent: 'space-between' }, roleLogo: { width: 64, height: 64 }, roleIntro: { gap: 14, marginTop: 'auto', marginBottom: 34 }, roleBrand: { color: colors.dim, fontSize: 12, lineHeight: 16, fontFamily: fonts.bold, letterSpacing: 2.2 }, roleTitle: { color: colors.cream, fontSize: 43, lineHeight: 46, fontFamily: fonts.bold, letterSpacing: -1.3 }, roleCopy: { fontFamily: fonts.regular, color: colors.muted, fontSize: 17, lineHeight: 25, maxWidth: 430 }, roleActions: { gap: 12 }, rolePrimary: { minHeight: 102, borderRadius: 16, padding: 16, backgroundColor: colors.lime, flexDirection: 'row', alignItems: 'center', gap: 13 }, roleActionIcon: { width: 48, height: 48, borderRadius: 15, backgroundColor: 'rgba(7,10,2,0.12)', alignItems: 'center', justifyContent: 'center' }, rolePrimaryTitle: { color: colors.black, fontSize: 19, fontFamily: fonts.bold }, rolePrimaryCopy: { fontFamily: fonts.regular, color: '#2B3510', fontSize: 12, lineHeight: 17, marginTop: 3 }, roleSecondary: { minHeight: 102, borderRadius: 16, padding: 16, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, flexDirection: 'row', alignItems: 'center', gap: 13 }, roleOwnerIcon: { width: 48, height: 48, borderRadius: 15, backgroundColor: colors.panelRaised, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, roleSecondaryTitle: { color: colors.cream, fontSize: 19, fontFamily: fonts.bold }, roleSecondaryCopy: { fontFamily: fonts.regular, color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 3 }, roleFine: { fontFamily: fonts.regular, color: colors.muted, fontSize: 11, lineHeight: 16, textAlign: 'center', marginTop: 17 }
 });

@@ -6,12 +6,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import type { Session } from '@supabase/supabase-js';
-import * as AppleAuthentication from 'expo-apple-authentication';
-import * as Crypto from 'expo-crypto';
 import * as ExpoLinking from 'expo-linking';
-import * as WebBrowser from 'expo-web-browser';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { Button, Card, Chip, Field, Notice, SectionTitle } from '../ui';
+import { sendPasswordReset } from '../auth';
+import { AppTabBar, BrandMark, EmptyRow, IconBack, PageHeader, SettingRow, SocialSignIn, TextLink, type TabItem } from '../shell';
 import { colors, fonts } from '../theme';
 import { supabase } from '../supabase';
 import { scanUrlFromTag } from '../nfc';
@@ -291,7 +290,7 @@ function GymsScreen({ gyms, preferences, onPreferences, onOpen }: { gyms: Partne
           {isOpen ? (loadingGymId === gym.id ? <ActivityIndicator color={colors.lime} /> : <View style={styles.equipmentSection}>
             <Field label={`Find equipment at ${gym.name}`} value={query} onChangeText={setQuery} placeholder="Machine, category, or station" />
             <Text style={styles.equipmentCount}>{visible.length} of {plural(allEquipment.length, 'station')}</Text>
-            {allEquipment.length ? <View style={styles.list}>{visible.map((item) => <Pressable key={item.publicId} onPress={() => onOpen(item.publicId)} style={styles.catalogRow}><View style={styles.stationCode}><Text style={styles.stationCodeText}>{item.stationCode}</Text></View><View style={styles.flex}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.rowMeta}>{item.category}</Text></View><Ionicons name="chevron-forward" size={18} color={colors.muted} /></Pressable>)}</View> : <EmptyRow icon="barbell-outline" title="Equipment coming soon" copy={`${gym.name} hasn't connected equipment yet.`} />}
+            {allEquipment.length ? <View style={styles.list}>{visible.map((item) => <Pressable key={item.publicId} onPress={() => onOpen(item.publicId)} style={styles.catalogRow}><View style={styles.stationCode}><Text style={styles.stationCodeText}>{item.stationCode}</Text></View><View style={styles.flex}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.rowMeta}>{item.category}</Text></View><Ionicons name="chevron-forward" size={18} color={colors.muted} /></Pressable>)}</View> : <EmptyRow icon="barbell-outline" title="No equipment connected yet" copy={`${gym.name} hasn't connected equipment to StrictlyVision.`} />}
           </View>) : null}
         </View>;
       })}
@@ -358,7 +357,7 @@ function ProfileScreen({ session, preferences, onPreferences, onSwitchOwner }: {
       <SettingRow icon="location-outline" title="Preferred gyms" copy={`${preferences.favoriteGymIds.length} selected`} />
       <SectionTitle>Connections</SectionTitle>
       {isHealthKitSupported() ? <Pressable accessibilityRole="switch" accessibilityState={{ checked: !!preferences.healthKitEnabled, busy: healthBusy }} accessibilityLabel={`${healthProviderName()} workout sync`} accessibilityHint={preferences.healthKitEnabled ? 'Turns off future health data access inside StrictlyVision' : 'Continues to the system health permission request'} disabled={healthBusy} onPress={toggleHealth}><SettingRow icon="heart-outline" title={healthProviderName()} copy={preferences.healthKitEnabled ? 'Heart rate and active calories are added to finished workout history' : 'Optionally add workout time, heart rate, and active calories to your history'}>{healthBusy ? <ActivityIndicator color={colors.lime} /> : <Text style={[styles.connectText, preferences.healthKitEnabled && styles.connectTextOn]}>{preferences.healthKitEnabled ? 'On' : 'Continue'}</Text>}</SettingRow></Pressable> : null}
-      <Pressable accessibilityRole="button" onPress={toggleStrava} disabled={connecting || (!strava.connected && !isStravaConfigured())}><SettingRow icon="bicycle-outline" title="Strava" copy={strava.connected ? `Connected${strava.name ? ` as ${strava.name}` : ''} · workouts upload when you finish` : isStravaConfigured() ? 'Upload finished workouts as Weight Training' : 'Coming soon'}>{connecting ? <ActivityIndicator color={colors.lime} /> : <Text style={[styles.connectText, strava.connected && styles.connectTextOn]}>{strava.connected ? 'On' : isStravaConfigured() ? 'Connect' : ''}</Text>}</SettingRow></Pressable>
+      {strava.connected || isStravaConfigured() ? <Pressable accessibilityRole="button" onPress={toggleStrava} disabled={connecting || (!strava.connected && !isStravaConfigured())}><SettingRow icon="bicycle-outline" title="Strava" copy={strava.connected ? `Connected${strava.name ? ` as ${strava.name}` : ''} · workouts upload when you finish` : isStravaConfigured() ? 'Upload finished workouts as Weight Training' : 'Coming soon'}>{connecting ? <ActivityIndicator color={colors.lime} /> : <Text style={[styles.connectText, strava.connected && styles.connectTextOn]}>{strava.connected ? 'On' : isStravaConfigured() ? 'Connect' : ''}</Text>}</SettingRow></Pressable> : null}
       <SectionTitle>App</SectionTitle>
       <Pressable onPress={onSwitchOwner}><SettingRow icon="business-outline" title="Switch to owner tools" copy="Approved gym accounts only" chevron /></Pressable>
       <Pressable onPress={() => Linking.openURL('https://strictlyinc.com/privacy')}><SettingRow icon="shield-checkmark-outline" title="Privacy" chevron /></Pressable>
@@ -382,39 +381,14 @@ function MemberAuthCard() {
     const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
     setMessage(error ? error.message : 'Signed in. Your local workout is ready to sync.'); setBusy(false);
   };
-  const apple = async () => {
+  const forgot = async () => {
+    if (!email.includes('@')) return setMessage('Enter your account email above, then tap Forgot password.');
     setBusy(true); setMessage('');
-    try {
-      const rawNonce = newId();
-      const hashedNonce = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, rawNonce);
-      const credential = await AppleAuthentication.signInAsync({ requestedScopes: [AppleAuthentication.AppleAuthenticationScope.EMAIL, AppleAuthentication.AppleAuthenticationScope.FULL_NAME], nonce: hashedNonce });
-      if (!credential.identityToken) throw new Error('Apple did not return a sign-in token.');
-      const { error } = await supabase.auth.signInWithIdToken({ provider: 'apple', token: credential.identityToken, nonce: rawNonce });
-      if (error) throw error;
-    } catch (reason) { if ((reason as { code?: string }).code !== 'ERR_REQUEST_CANCELED') setMessage(reason instanceof Error ? reason.message : 'Apple sign-in did not finish.'); }
+    try { await sendPasswordReset(email); setMessage('Password reset email sent. Open the link to choose a new password, then sign in here.'); }
+    catch (reason) { setMessage(reason instanceof Error ? reason.message : 'The reset email could not be sent.'); }
     setBusy(false);
   };
-  const google = async () => {
-    setBusy(true); setMessage('');
-    try {
-      const redirectTo = ExpoLinking.createURL('auth/callback');
-      const { data, error } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo, skipBrowserRedirect: true } });
-      if (error || !data.url) throw error || new Error('Google sign-in could not start.');
-      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
-      if (result.type !== 'success') throw new Error('Google sign-in was canceled.');
-      const params = new URL(result.url.replace('#', '?')).searchParams;
-      const code = params.get('code');
-      const accessToken = params.get('access_token'); const refreshToken = params.get('refresh_token');
-      const sessionError = code
-        ? (await supabase.auth.exchangeCodeForSession(code)).error
-        : accessToken && refreshToken
-          ? (await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken })).error
-          : new Error(params.get('error_description') || 'Google sign-in did not return a session.');
-      if (sessionError) throw sessionError;
-    } catch (reason) { setMessage(reason instanceof Error ? reason.message : 'Google sign-in did not finish.'); }
-    setBusy(false);
-  };
-  return <Card style={styles.authCard}><Text style={styles.authCardTitle}>Keep your progress</Text><Text style={styles.bodyMuted}>Create an account or sign in to use your history on another device.</Text>{Platform.OS === 'ios' ? <Button label="Continue with Apple" onPress={apple} tone="secondary" loading={busy} /> : null}<Button label="Continue with Google" onPress={google} tone="secondary" disabled={busy} /><View style={styles.divider}><View style={styles.dividerLine} /><Text style={styles.dividerText}>EMAIL</Text><View style={styles.dividerLine} /></View><Field label="Email" value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" autoComplete="email" placeholder="you@example.com" /><Field label="Password" value={password} onChangeText={setPassword} secureTextEntry autoComplete="password" placeholder="At least 8 characters" />{message ? <Notice tone={/check|signed in/i.test(message) ? 'success' : 'danger'}>{message}</Notice> : null}<Button label="Create account" onPress={create} loading={busy} disabled={!email.includes('@') || password.length < 8} /><Button label="Sign in to existing account" onPress={signIn} tone="secondary" disabled={busy || !email.includes('@') || !password} /></Card>;
+  return <Card style={styles.authCard}><Text style={styles.authCardTitle}>Keep your progress</Text><Text style={styles.bodyMuted}>Create an account or sign in to use your history on another device.</Text><SocialSignIn onMessage={setMessage} disabled={busy} /><Field label="Email" value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" autoComplete="email" placeholder="you@example.com" /><Field label="Password" value={password} onChangeText={setPassword} secureTextEntry autoComplete="password" placeholder="At least 8 characters" />{message ? <Notice tone={/check|signed in|sent/i.test(message) ? 'success' : 'danger'}>{message}</Notice> : null}<Button label="Create account" onPress={create} loading={busy} disabled={!email.includes('@') || password.length < 8} /><Button label="Sign in to existing account" onPress={signIn} tone="secondary" disabled={busy || !email.includes('@') || !password} /><TextLink label="Forgot password?" onPress={forgot} disabled={busy} /></Card>;
 }
 
 function MachineScreen({ link, session, workout, preferences, onBack, onExercise, onWorkoutChanged }: { link: MachineLink; session: Session | null; workout: WorkoutSession | null; preferences: MemberPreferences; onBack: () => void; onExercise: (slug: string) => void; onWorkoutChanged: (workout?: WorkoutSession) => Promise<void> }) {
@@ -491,7 +465,7 @@ function ownerVideoUrl(url?: string | null) {
 
 function MachineVideo({ url, gymName, accent }: { url?: string | null; gymName: string; accent: string }) {
   const video = ownerVideoUrl(url);
-  if (!video) return <View style={styles.videoMissing}><Ionicons name="videocam-outline" size={30} color={accent} /><Text style={styles.videoMissingTitle}>Video coming soon</Text><Text style={styles.centerCopy}>{gymName} hasn’t uploaded a demo for this machine yet. Follow the steps below until it’s ready.</Text></View>;
+  if (!video) return <View style={styles.videoMissing}><Ionicons name="videocam-outline" size={30} color={accent} /><Text style={styles.videoMissingTitle}>No demo video yet</Text><Text style={styles.centerCopy}>{gymName} hasn’t uploaded a demo for this machine yet. Follow the steps below until it’s ready.</Text></View>;
   return <PlayableVideo url={video} accent={accent} />;
 }
 
@@ -510,24 +484,17 @@ function PlayableVideo({ url, accent }: { url: string; accent: string }) {
   return <View style={[styles.videoFrame, { borderColor: `${accent}66` }]}><VideoView player={player} style={styles.video} contentFit="contain" nativeControls /><View pointerEvents="none" style={styles.videoLabel}><View style={[styles.videoDot, { backgroundColor: accent }]} /><Text style={styles.videoLabelText}>FORM DEMONSTRATION</Text></View></View>;
 }
 
-function MemberTabBar({ tab, setTab }: { tab: MemberTab; setTab: (tab: MemberTab) => void }) {
-  const tabs: { id: MemberTab; label: string; icon: keyof typeof Ionicons.glyphMap; active: keyof typeof Ionicons.glyphMap }[] = [
-    { id: 'today', label: 'Today', icon: 'flash-outline', active: 'flash' },
-    { id: 'scan', label: 'Scan', icon: 'scan-outline', active: 'scan' },
-    { id: 'gyms', label: 'Gyms', icon: 'business-outline', active: 'business' },
-    { id: 'profile', label: 'Profile', icon: 'person-outline', active: 'person' }
-  ];
-  return <SafeAreaView edges={['bottom']} style={styles.tabSafe}><View style={styles.tabs}>{tabs.map((item) => <Pressable accessibilityRole="tab" accessibilityState={{ selected: tab === item.id }} key={item.id} onPress={() => setTab(item.id)} style={styles.tab}><Ionicons name={tab === item.id ? item.active : item.icon} size={22} color={tab === item.id ? colors.lime : colors.muted} /><Text style={[styles.tabText, tab === item.id && styles.tabTextActive]}>{item.label}</Text></Pressable>)}</View></SafeAreaView>;
-}
+const MEMBER_TABS: TabItem<MemberTab>[] = [
+  { id: 'today', label: 'Today', icon: 'flash-outline', active: 'flash' },
+  { id: 'scan', label: 'Scan', icon: 'scan-outline', active: 'scan' },
+  { id: 'gyms', label: 'Gyms', icon: 'business-outline', active: 'business' },
+  { id: 'profile', label: 'Profile', icon: 'person-outline', active: 'person' }
+];
+function MemberTabBar({ tab, setTab }: { tab: MemberTab; setTab: (tab: MemberTab) => void }) { return <AppTabBar tabs={MEMBER_TABS} tab={tab} onChange={setTab} />; }
 
-function PageHeader({ title, action }: { title: string; action?: React.ReactNode }) { return <View style={styles.pageHeader}><Text style={styles.pageTitle}>{title}</Text>{action}</View>; }
-function BrandMark() { return <View style={styles.brandMark}><Ionicons name="pulse" size={22} color={colors.lime} /></View>; }
-function IconBack({ onPress }: { onPress: () => void }) { return <Pressable accessibilityRole="button" accessibilityLabel="Back" onPress={onPress} style={styles.backButton}><Ionicons name="chevron-back" size={24} color={colors.cream} /></Pressable>; }
 function Metric({ value, label }: { value: string | number; label: string }) { return <View style={styles.metric}><Text style={styles.metricValue}>{value}</Text><Text style={styles.metricLabel}>{label}</Text></View>; }
 function SyncBadge({ state }: { state: WorkoutSet['syncState'] }) { return <View style={[styles.syncBadge, state === 'synced' && styles.syncBadgeSynced]}><Ionicons name={state === 'synced' ? 'checkmark' : 'cloud-offline-outline'} size={12} color={state === 'synced' ? colors.black : colors.cream} /><Text style={[styles.syncText, state === 'synced' && styles.syncTextSynced]}>{state === 'synced' ? 'Saved' : 'Pending'}</Text></View>; }
 function EquipmentRow({ machine, onPress }: { machine: MemberMachine; onPress: () => void }) { return <Pressable onPress={onPress} style={styles.equipmentRow}><View style={styles.equipmentGlyph}><Ionicons name="barbell-outline" size={21} color={colors.lime} /></View><View style={styles.flex}><Text style={styles.rowTitle}>{machine.name}</Text><Text style={styles.rowMeta}>{machine.gymName} · Station {machine.stationCode}</Text></View><Ionicons name="chevron-forward" size={18} color={colors.muted} /></Pressable>; }
-function EmptyRow({ icon, title, copy }: { icon: keyof typeof Ionicons.glyphMap; title: string; copy: string }) { return <View style={styles.emptyRow}><Ionicons name={icon} size={24} color={colors.muted} /><View style={styles.flex}><Text style={styles.rowTitle}>{title}</Text><Text style={styles.rowMeta}>{copy}</Text></View></View>; }
-function SettingRow({ icon, title, copy, children, chevron }: { icon: keyof typeof Ionicons.glyphMap; title: string; copy?: string; children?: React.ReactNode; chevron?: boolean }) { return <View style={styles.settingRow}><View style={styles.settingIcon}><Ionicons name={icon} size={20} color={colors.lime} /></View><View style={styles.flex}><Text style={styles.rowTitle}>{title}</Text>{copy ? <Text style={styles.rowMeta}>{copy}</Text> : null}</View>{children}{chevron ? <Ionicons name="chevron-forward" size={18} color={colors.muted} /> : null}</View>; }
 function workoutSummary(workout: WorkoutSession) { const duration = Math.max(1, Math.round((new Date(workout.finishedAt || Date.now()).getTime() - new Date(workout.startedAt).getTime()) / 60000)); const exercises = new Set(workout.sets.map((set) => set.exerciseName || set.machineName)).size; const volume = Math.round(workout.sets.reduce((sum, set) => sum + set.weight * set.reps, 0)); return `${duration} min · ${plural(exercises, 'exercise')} · ${plural(workout.sets.length, 'set')} · ${volume.toLocaleString()} lb volume`; }
 function plural(count: number, word: string) { return `${count} ${word}${count === 1 ? '' : 's'}`; }
 function healthSummary(health?: WorkoutSession['health']) {

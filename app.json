@@ -8,7 +8,7 @@
     "scheme": "strictlyvision",
     "icon": "./assets/strictlyvision-app-icon.png",
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.strictlyinc.strictlyvision",
       "usesAppleSignIn": true,
       "associatedDomains": [
@@ -22,7 +22,10 @@
           "NDEF"
         ]
       },
-      "appleTeamId": "67A2H77882"
+      "appleTeamId": "67A2H77882",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.strictlyinc.strictlyvision",
