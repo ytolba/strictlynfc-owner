@@ -2,7 +2,7 @@
   "expo": {
     "name": "StrictlyVision",
     "slug": "strictlyvision",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "Tap connected gym equipment, learn each movement, log workouts, track progress, and manage a smarter gym floor.",
     "orientation": "portrait",
     "scheme": "strictlyvision",
@@ -15,11 +15,12 @@
         "applinks:strictlyinc.com"
       ],
       "infoPlist": {
-        "NFCReaderUsageDescription": "StrictlyVision uses NFC to open connected gym equipment and to program tags for approved gym owners."
+        "NFCReaderUsageDescription": "StrictlyVision uses NFC to open connected gym equipment and to program tags for approved gym owners.",
+        "NSPhotoLibraryUsageDescription": "StrictlyVision does not access your photo library. Gym owners choose demonstration videos from Files."
       },
       "entitlements": {
         "com.apple.developer.nfc.readersession.formats": [
-          "NDEF"
+          "TAG"
         ]
       },
       "appleTeamId": "67A2H77882",
@@ -77,7 +78,8 @@
       [
         "react-native-nfc-manager",
         {
-          "nfcPermission": "StrictlyVision uses NFC to open connected gym equipment and program tags for approved gym owners."
+          "nfcPermission": "StrictlyVision uses NFC to open connected gym equipment and program tags for approved gym owners.",
+          "includeNdefEntitlement": false
         }
       ],
       [
@@ -108,16 +110,16 @@
       [
         "expo-secure-store",
         {
-          "faceIDPermission": false
+          "faceIDPermission": "StrictlyVision does not use Face ID."
         }
       ],
       [
         "expo-location",
         {
           "locationWhenInUsePermission": "StrictlyVision uses your location only while the app is open to show the partner gym closest to you.",
-          "locationAlwaysAndWhenInUsePermission": false,
-          "locationAlwaysPermission": false,
-          "motionUsagePermission": false
+          "locationAlwaysAndWhenInUsePermission": "StrictlyVision uses your location only while the app is open to show the partner gym closest to you. It does not track your location in the background.",
+          "locationAlwaysPermission": "StrictlyVision uses your location only while the app is open to show the partner gym closest to you. It does not track your location in the background.",
+          "motionUsagePermission": "StrictlyVision does not use motion or fitness activity data from your device."
         }
       ],
       "./plugins/withPlayCompliance",
