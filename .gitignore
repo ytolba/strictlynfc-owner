@@ -12,3 +12,6 @@ android/
 # local secrets (Google Maps key, etc.)
 .env
 .env*.local
+
+# generated knowledge graph (rebuild with: graphify extract . --code-only)
+graphify-out/

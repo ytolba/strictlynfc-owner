@@ -1,0 +1,7 @@
+# Dependency and build config: these contribute ~120 leaf nodes (npm deps,
+# Expo config keys) that crowd the graph without describing the codebase.
+package.json
+package-lock.json
+app.json
+eas.json
+tsconfig.json
