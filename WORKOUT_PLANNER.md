@@ -1,0 +1,28 @@
+# StrictlyVision workout planner architecture
+
+The member chooses a partner gym, types the muscles or workout they want in one free-text field, or taps an example, and chooses 20/30/45/60/75/90 minutes. The app calls the `generate-workout` Supabase Edge Function using the member's Auth session, including anonymous guest sessions. The TypeSafe key stays server-side.
+
+## Request path
+
+1. The function verifies the caller's Supabase JWT and derives the user ID from Auth, never the request body. It checks the gym is active and public in Postgres.
+2. A Postgres reservation atomically enforces five generation attempts per member per UTC day. An identical request on the same gym-local day returns its stored plan; a concurrent request gets a short pending response. This prevents duplicate TypeSafe calls across devices and Edge instances.
+3. The gym catalog has a one-hour shared database cache, a refresh lease, and a 24-hour stale fallback. On refresh the function calls Strictly's batched `/api/member/gyms/:slug/exercises` endpoint once. The website Worker reads active machines, their active NFC tags, and allowed station exercises in paginated database queries; Vault's current static inventory remains available during the transition to owner-managed rows. No per-station resolution or video lookup happens while planning.
+4. Jev classifies only the member's submitted focus into a typed intent and screens for medical/injury requests. It does **not** invent exercises, prescribe loads, or see identity, HealthKit data, workout history, or gym data. Explicitly named muscle groups in a request such as “chest and back” are preserved even if Jev chooses only one broad intent.
+5. A deterministic selector chooses from that gym's available strength exercises. Broad chest requests cover incline, flat/fly, and decline movement angles; back covers vertical pull, row, and posterior chain; shoulders cover front, side, and rear movements when suitable equipment is available. When multiple muscle groups are named, their areas are interleaved so a short session does not silently drop a whole requested group. Short full-body sessions prioritize a leg movement, upper-body pull, and push. The time budget determines exercise count and working sets; the plan distinguishes areas deferred by time from areas missing suitable gym equipment. Short plans use fewer sets with guidance to make them challenging while maintaining control and warming up. Estimated minutes are rough, not a guarantee. These are practical movement categories, not a claim to isolate every anatomical fiber. Multi-exercise stations retain the exercise slug, so a rack plan opens the chosen lift while the NFC URI still identifies the physical rack. Nothing is logged automatically.
+6. The plan is saved in Postgres by authenticated user + gym + gym-local day and can be retrieved on another device. The app also keeps a user-and-gym-scoped on-device copy for offline viewing until the plan's `validUntil`.
+
+Planner tables have RLS enabled with no member policies. Only the service role may execute reservation/read RPCs; the Edge Function is the sole trusted caller. User-owned plans and quotas cascade away on account deletion.
+
+## Deployment status (2026-09-21)
+
+The migration is applied and tracked in project `owedpojalgtkiuthptft`; live checks confirmed RLS and service-only table privileges. The Worker is deployed to `strictlyinc.com`, and its Vault feed exposes 79 exercise choices including all 12 power-rack lifts. Only `TYPESAFE_API_KEY` was copied from the root `.env` into Supabase Edge secrets; the rest of `.env` was not uploaded. `generate-workout` is deployed with JWT verification enabled. A temporary anonymous account generated a five-exercise plan, confirmed one stored plan and one quota use, and was deleted; cascading cleanup was verified.
+
+Before shipping a new app build, run hands-on iOS/Android tests for a signed-in member, guest, switching gyms, another device on the same account, concurrent repeated requests, sparse gyms, and account deletion. A new DB-backed gym endpoint is covered by a mocked Worker test, but only Vault has been verified live because it is currently the only public partner gym.
+
+The TypeSafe API key has not been copied from the local `.env` into source or shipped in the mobile bundle. Disclose that the optional planner processes submitted focus text with TypeSafe AI in the app's privacy policy before release.
+
+The earlier function passed a live Vault “chest and back” check on an iPhone 17 Pro. On 2026-09-25, the time-aware selector was deployed as `generate-workout` version 4 with JWT verification enabled. Ten deterministic Deno tests, Deno lint, and the mobile TypeScript check pass. A new live gym member plan was not generated during this update; the simulator service was unavailable in this environment. The short-session structure draws on [ACSM's 2026 resistance-training guidance](https://acsm.org/resistance-training-guidelines-update-2026/) and a [review of time-efficient resistance training](https://pubmed.ncbi.nlm.nih.gov/34125411/), then applies conservative product heuristics for equipment selection and session length.
+
+## Current limits
+
+The planner supports up to 5,000 active machine rows per gym in the batched Worker feed and up to 5,000 exercise candidates per gym in its catalog. Those are explicit safety bounds, not silent truncation. Gym listing currently returns all active public gyms in pages of 500 up to 10,000; before a nationwide rollout, add location/search pagination to the app and API instead of loading every gym into the picker/map. Run load tests and review TypeSafe/Supabase quotas before general availability.

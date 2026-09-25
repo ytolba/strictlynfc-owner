@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, BackHandler, Image, KeyboardAvoidingView, Linking, Platform, Pressable, RefreshControl,
+  AccessibilityInfo, ActivityIndicator, Alert, Animated, BackHandler, Easing, Image, KeyboardAvoidingView, Linking, Platform, Pressable, RefreshControl,
   ScrollView, Share, StyleSheet, Text, View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -8,10 +8,12 @@ import { Ionicons } from '@expo/vector-icons';
 import type { Session } from '@supabase/supabase-js';
 import * as ExpoLinking from 'expo-linking';
 import { VideoView, useVideoPlayer } from 'expo-video';
+import * as Haptics from 'expo-haptics';
 import { Button, Card, Chip, Field, Notice, SectionTitle } from '../ui';
 import { sendPasswordReset } from '../auth';
 import { AppTabBar, BrandMark, EmptyRow, IconBack, PageHeader, SettingRow, SocialSignIn, TextLink, type TabItem } from '../shell';
 import { colors, fonts } from '../theme';
+import { useReduceMotion } from '../motion';
 import { supabase } from '../supabase';
 import { scanUrlFromTag } from '../nfc';
 import { deleteMemberAccount, exportMemberData, loadGymEquipment, loadHistory, loadPartnerGyms, machineLinkFromUrl, recordSet, recordTap, resolveMachine } from './api';
@@ -20,12 +22,13 @@ import { ensureMemberSession } from './session';
 import { GymMap, distanceMiles, formatMiles, type Coords } from './GymMap';
 import { MuscleMap } from './MuscleMap';
 import {
-  appendWorkoutSet, clearMemberData, discardActiveWorkout, ensureActiveWorkout, finishActiveWorkout, loadActiveWorkout, loadFinishedWorkouts, loadPendingWorkoutSets, loadPreferences,
+  appendWorkoutSet, clearMemberData, discardActiveWorkout, finishActiveWorkout, loadActiveWorkout, loadFinishedWorkouts, loadPendingWorkoutSets, loadPreferences,
   loadRecentMachines, markWorkoutCloudSynced, updateFinishedWorkout, markWorkoutSetSynced, newId, rememberMachine, replaceWorkoutSet, savePreferences
 } from './storage';
 import { healthProviderName, isHealthKitSupported, readWorkoutHealthStats, requestHealthKitAccess, saveWorkoutToHealth } from './health';
 import { connectStrava, disconnectStrava, isStravaConfigured, loadStravaConnection, uploadWorkoutToStrava } from './strava';
 import { WorkoutTimerBar, useElapsed } from './WorkoutTimer';
+import { WorkoutPlanner } from './WorkoutPlanner';
 import type { EquipmentSummary, MachineHistoryItem, MemberMachine, MemberPreferences, PartnerGym, WorkoutSession, WorkoutSet } from './types';
 import { VAULT_EQUIPMENT, VAULT_GYM } from './vaultCatalog';
 
@@ -35,6 +38,7 @@ type MachineLink = { publicId: string; exerciseSlug?: string; openedAt?: number 
 export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Session | null; initialLink?: MachineLink | null; onSwitchOwner: () => void }) {
   const [tab, setTab] = useState<MemberTab>('today');
   const [machineLink, setMachineLink] = useState<MachineLink | null>(initialLink || null);
+  const [plannerOpen, setPlannerOpen] = useState(false);
   const [activeWorkout, setActiveWorkout] = useState<WorkoutSession | null>(null);
   const [finished, setFinished] = useState<WorkoutSession[]>([]);
   const [recent, setRecent] = useState<MemberMachine[]>([]);
@@ -78,16 +82,17 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
       if (machineLink) { setMachineLink(null); return true; }
+      if (plannerOpen) { setPlannerOpen(false); return true; }
       if (tab !== 'today') { setTab('today'); return true; }
       return false;
     });
     return () => subscription.remove();
-  }, [machineLink, tab]);
+  }, [machineLink, plannerOpen, tab]);
 
   const completeWorkout = async () => {
     const result = await finishActiveWorkout();
     if (!result) return reload();
-    // Pull heart rate and active calories Apple Health recorded between the first tap and Finish.
+    // Pull heart rate and active calories Apple Health recorded between the first set and Finish.
     if (preferences.healthKitEnabled) {
       const health = await readWorkoutHealthStats(result).catch(() => null);
       if (health) { result.health = health; await updateFinishedWorkout(result.id, { health }); }
@@ -132,8 +137,10 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
     />
   );
 
+  if (plannerOpen) return <WorkoutPlanner gyms={gyms} preferences={preferences} userId={session?.user.id || null} workout={activeWorkout} onBack={() => setPlannerOpen(false)} onOpen={openMachine} />;
+
   const screen = tab === 'today'
-    ? <TodayScreen workout={activeWorkout} finished={finished} recent={recent} onOpen={openMachine} onFinish={finishWorkout} refreshing={refreshing} onRefresh={refresh} />
+    ? <TodayScreen workout={activeWorkout} finished={finished} recent={recent} onOpen={openMachine} onOpenPlanner={() => setPlannerOpen(true)} onFinish={finishWorkout} refreshing={refreshing} onRefresh={refresh} />
     : tab === 'scan'
       ? <ScanScreen gyms={gyms} preferences={preferences} onOpen={openMachine} />
       : tab === 'gyms'
@@ -149,9 +156,9 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
   );
 }
 
-function TodayScreen({ workout, finished, recent, onOpen, onFinish, refreshing, onRefresh }: {
+function TodayScreen({ workout, finished, recent, onOpen, onOpenPlanner, onFinish, refreshing, onRefresh }: {
   workout: WorkoutSession | null; finished: WorkoutSession[]; recent: MemberMachine[]; onOpen: (id: string, exercise?: string) => void;
-  onFinish: () => void; refreshing: boolean; onRefresh: () => void;
+  onOpenPlanner: () => void; onFinish: () => void; refreshing: boolean; onRefresh: () => void;
 }) {
   const volume = workout?.sets.reduce((sum, set) => sum + set.weight * set.reps, 0) || 0;
   const exerciseCount = new Set(workout?.sets.map((set) => `${set.publicId}:${set.exerciseSlug || ''}`)).size;
@@ -162,7 +169,7 @@ function TodayScreen({ workout, finished, recent, onOpen, onFinish, refreshing, 
       {workout ? (
         <View style={styles.workoutPanel}>
           <View style={styles.workoutTop}><View><Text style={styles.workoutTitle}>Workout in progress</Text><Text style={styles.bodyMuted}>{workout.gymName}</Text></View><View style={styles.liveBadge}><View style={styles.liveDot} /><Text style={styles.liveLabel}>ACTIVE</Text></View></View>
-          <View accessibilityLabel={`Elapsed time ${elapsed}`}><Text style={styles.workoutClock}>{elapsed}</Text><Text style={styles.metricLabel}>elapsed since your first tap</Text></View>
+          <View accessibilityLabel={`Elapsed time ${elapsed}`}><Text style={styles.workoutClock}>{elapsed}</Text><Text style={styles.metricLabel}>elapsed since your first set</Text></View>
           <View style={styles.workoutMetrics}><Metric value={workout.sets.length} label="sets" /><Metric value={exerciseCount} label="exercises" /><Metric value={Math.round(volume).toLocaleString()} label="lb volume" /></View>
           {workout.sets.length ? <View style={styles.compactSets}>{workout.sets.slice(-3).reverse().map((set) => <View key={set.clientLogId} style={styles.compactSet}><View><Text style={styles.rowTitle}>{set.exerciseName || set.machineName}</Text><Text style={styles.rowMeta}>{set.weight} lb × {set.reps}{set.seatSetting ? ` · setting ${set.seatSetting}` : ''}</Text></View><SyncBadge state={set.syncState} /></View>)}</View> : <Text style={styles.bodyMuted}>Log a set on any machine and it will appear here.</Text>}
           <Button label={workout.sets.length ? 'Finish workout' : 'End workout'} onPress={onFinish} tone={workout.sets.length ? 'lime' : 'secondary'} />
@@ -170,10 +177,17 @@ function TodayScreen({ workout, finished, recent, onOpen, onFinish, refreshing, 
       ) : (
         <View style={styles.emptyHero}>
           <View style={styles.emptyIcon}><Ionicons name="flash" size={28} color={colors.black} /></View>
-          <Text style={styles.heroTitle}>Your workout starts with a tap.</Text>
-          <Text style={styles.bodyMuted}>Tap any StrictlyVision tag and your workout timer starts automatically.</Text>
+          <Text style={styles.heroTitle}>Tap a machine. Log a set.</Text>
+          <Text style={styles.bodyMuted}>Tap a tag to open a machine. Your workout starts when you record your first set.</Text>
         </View>
       )}
+
+      <View style={styles.planPrompt}>
+        <View style={styles.planPromptIcon}><Ionicons name="sparkles-outline" size={23} color={colors.lime} /></View>
+        <View style={styles.flex}><Text style={styles.rowTitle}>Plan today’s workout</Text><Text style={styles.rowMeta}>Built around the equipment at your gym</Text></View>
+        <Ionicons name="arrow-forward" size={20} color={colors.lime} />
+        <Pressable accessibilityLabel="Plan today's workout" accessibilityRole="button" onPress={onOpenPlanner} style={StyleSheet.absoluteFill} />
+      </View>
 
       <SectionTitle>Recent equipment</SectionTitle>
       {recent.length ? <View style={styles.list}>{recent.map((machine) => <EquipmentRow key={`${machine.publicId}:${machine.exerciseSlug || ''}`} machine={machine} onPress={() => onOpen(machine.publicId, machine.exerciseSlug || undefined)} />)}</View> : <EmptyRow icon="scan-outline" title="No equipment yet" copy="Your recently scanned machines will stay one tap away." />}
@@ -193,16 +207,18 @@ async function equipmentForGym(gym: PartnerGym) {
 function ScanScreen({ gyms, preferences, onOpen }: { gyms: PartnerGym[]; preferences: MemberPreferences; onOpen: (id: string) => void }) {
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [message, setMessage] = useState('');
   const scan = async () => {
-    setBusy(true); setMessage('');
+    setBusy(true); setScanning(true); setMessage('');
     try {
       const url = await scanUrlFromTag();
       const link = machineLinkFromUrl(url);
       if (!link) throw new Error('That tag is not linked to a StrictlyVision station.');
+      void Haptics.selectionAsync().catch(() => undefined);
       onOpen(link.publicId);
     } catch (reason) { setMessage(nfcError(reason)); }
-    setBusy(false);
+    finally { setBusy(false); setScanning(false); }
   };
   const manual = async () => {
     const value = code.trim().toLowerCase();
@@ -225,7 +241,7 @@ function ScanScreen({ gyms, preferences, onOpen }: { gyms: PartnerGym[]; prefere
       <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
         <PageHeader title="Scan" action={<BrandMark />} />
         <View style={styles.scanStage}>
-          <View style={styles.scanRings}><View style={styles.scanRingsInner}><Ionicons name="phone-portrait-outline" size={44} color={colors.lime} /></View></View>
+          <View style={styles.scanRings}><ScanPulse active={scanning} /><View style={styles.scanRingsInner}><Ionicons name="phone-portrait-outline" size={44} color={colors.lime} /></View></View>
           <Text style={styles.scanTitle}>Tap the equipment tag</Text>
           <Text style={styles.centerCopy}>Hold the top of your phone close to the NFC sticker until StrictlyVision opens the machine.</Text>
           <Button label={busy ? 'Scanning…' : 'Start NFC scan'} onPress={scan} loading={busy} />
@@ -240,6 +256,22 @@ function ScanScreen({ gyms, preferences, onOpen }: { gyms: PartnerGym[]; prefere
       </ScrollView>
     </KeyboardAvoidingView>
   );
+}
+
+function ScanPulse({ active }: { active: boolean }) {
+  const reducedMotion = useReduceMotion();
+  const progress = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!active || reducedMotion) { progress.stopAnimation(); progress.setValue(0); return; }
+    const animation = Animated.loop(Animated.timing(progress, { toValue: 1, duration: 1100, easing: Easing.out(Easing.cubic), useNativeDriver: true, isInteraction: false }));
+    animation.start();
+    return () => animation.stop();
+  }, [active, reducedMotion, progress]);
+  if (!active || reducedMotion) return null;
+  return <Animated.View pointerEvents="none" style={[styles.scanPulse, {
+    opacity: progress.interpolate({ inputRange: [0, 1], outputRange: [0.55, 0] }),
+    transform: [{ scale: progress.interpolate({ inputRange: [0, 1], outputRange: [1, 1.55] }) }]
+  }]} />;
 }
 
 function GymsScreen({ gyms, preferences, onPreferences, onOpen }: { gyms: PartnerGym[]; preferences: MemberPreferences; onPreferences: (prefs: MemberPreferences) => void; onOpen: (id: string) => void }) {
@@ -353,7 +385,7 @@ function ProfileScreen({ session, preferences, onPreferences, onSwitchOwner }: {
       <View style={styles.profileIdentity}><View style={styles.avatar}><Ionicons name={anonymous ? 'person-outline' : 'person'} size={26} color={colors.lime} /></View><View style={styles.flex}><Text style={styles.profileName}>{anonymous ? 'Guest athlete' : session.user.email || 'StrictlyVision member'}</Text><Text style={styles.bodyMuted}>{anonymous ? 'Your workout stays on this device until you create an account.' : 'Your progress syncs across your devices.'}</Text></View></View>
       {anonymous ? <MemberAuthCard /> : null}
       <SectionTitle>Training preferences</SectionTitle>
-      <SettingRow icon="barbell-outline" title="Weight units" copy="Used throughout logs and progress"><View style={styles.segment}><Pressable onPress={() => onPreferences({ ...preferences, weightUnit: 'lb' })} style={[styles.segmentItem, preferences.weightUnit === 'lb' && styles.segmentActive]}><Text style={[styles.segmentText, preferences.weightUnit === 'lb' && styles.segmentTextActive]}>lb</Text></Pressable><Pressable onPress={() => onPreferences({ ...preferences, weightUnit: 'kg' })} style={[styles.segmentItem, preferences.weightUnit === 'kg' && styles.segmentActive]}><Text style={[styles.segmentText, preferences.weightUnit === 'kg' && styles.segmentTextActive]}>kg</Text></Pressable></View></SettingRow>
+      <SettingRow icon="barbell-outline" title="Weight units" copy="Used throughout logs and progress"><View style={styles.segment}><Pressable accessibilityRole="radio" accessibilityLabel="Pounds" accessibilityState={{ selected: preferences.weightUnit === 'lb' }} onPress={() => onPreferences({ ...preferences, weightUnit: 'lb' })} style={[styles.segmentItem, preferences.weightUnit === 'lb' && styles.segmentActive]}><Text style={[styles.segmentText, preferences.weightUnit === 'lb' && styles.segmentTextActive]}>lb</Text></Pressable><Pressable accessibilityRole="radio" accessibilityLabel="Kilograms" accessibilityState={{ selected: preferences.weightUnit === 'kg' }} onPress={() => onPreferences({ ...preferences, weightUnit: 'kg' })} style={[styles.segmentItem, preferences.weightUnit === 'kg' && styles.segmentActive]}><Text style={[styles.segmentText, preferences.weightUnit === 'kg' && styles.segmentTextActive]}>kg</Text></Pressable></View></SettingRow>
       <SettingRow icon="location-outline" title="Preferred gyms" copy={`${preferences.favoriteGymIds.length} selected`} />
       <SectionTitle>Connections</SectionTitle>
       {isHealthKitSupported() ? <Pressable accessibilityRole="switch" accessibilityState={{ checked: !!preferences.healthKitEnabled, busy: healthBusy }} accessibilityLabel={`${healthProviderName()} workout sync`} accessibilityHint={preferences.healthKitEnabled ? 'Turns off future health data access inside StrictlyVision' : 'Continues to the system health permission request'} disabled={healthBusy} onPress={toggleHealth}><SettingRow icon="heart-outline" title={healthProviderName()} copy={preferences.healthKitEnabled ? 'Heart rate and active calories are added to finished workout history' : 'Optionally add workout time, heart rate, and active calories to your history'}>{healthBusy ? <ActivityIndicator color={colors.lime} /> : <Text style={[styles.connectText, preferences.healthKitEnabled && styles.connectTextOn]}>{preferences.healthKitEnabled ? 'On' : 'Continue'}</Text>}</SettingRow></Pressable> : null}
@@ -400,10 +432,6 @@ function MachineScreen({ link, session, workout, preferences, onBack, onExercise
     try {
       const resolved = await resolveMachine(link.publicId, link.exerciseSlug);
       setMachine(resolved); await rememberMachine(resolved); await recordTap(link.publicId, sessionId, session).catch(() => undefined);
-      // The first tag tapped starts the workout clock; later taps join the same session.
-      const active = await ensureActiveWorkout(resolved.gymSlug || gymIdFor(resolved.gymName), resolved.gymName);
-      saveWorkoutToCloud(session, active).catch(() => undefined);
-      onWorkoutChanged();
       if (resolved.stationType !== 'multi_exercise' || link.exerciseSlug) setHistory(await loadHistory(link.publicId, sessionId, session, link.exerciseSlug));
     } catch (reason) { setMessage(reason instanceof Error ? reason.message : 'This station could not be opened.'); }
     setLoading(false);
@@ -422,36 +450,39 @@ function ExercisePicker({ machine, onBack, onExercise }: { machine: MemberMachin
 }
 
 function SetLogger({ machine, session, sessionId, preferences, accent, onSaved }: { machine: MemberMachine; session: Session | null; sessionId: string; preferences: MemberPreferences; accent: string; onSaved: (set: WorkoutSet, workout: WorkoutSession) => Promise<void> }) {
-  const [weight, setWeight] = useState(''); const [reps, setReps] = useState(''); const [seat, setSeat] = useState(''); const [notes, setNotes] = useState(''); const [busy, setBusy] = useState(false); const [message, setMessage] = useState('');
+  const [weight, setWeight] = useState(''); const [reps, setReps] = useState(''); const [seat, setSeat] = useState(''); const [notes, setNotes] = useState(''); const [busy, setBusy] = useState(false); const [message, setMessage] = useState(''); const [messageTone, setMessageTone] = useState<'success' | 'danger'>('success');
   const save = async () => {
     const entered = Number(weight); const repCount = Number(reps);
-    if (!Number.isFinite(entered) || entered < 0 || !Number.isInteger(repCount) || repCount < 1 || repCount > 100) return setMessage('Enter a valid weight and 1–100 reps.');
+    if (!Number.isFinite(entered) || entered < 0 || !Number.isInteger(repCount) || repCount < 1 || repCount > 100) { setMessageTone('danger'); return setMessage('Enter a valid weight and 1–100 reps.'); }
     const pounds = preferences.weightUnit === 'kg' ? entered * 2.2046226218 : entered;
     const item: WorkoutSet = { clientLogId: newId(), publicId: machine.publicId, machineName: machine.stationName || machine.name, exerciseSlug: machine.exerciseSlug, exerciseName: machine.name, gymName: machine.gymName, weight: Number(pounds.toFixed(2)), reps: repCount, seatSetting: seat.trim() || null, notes: notes.trim() || null, createdAt: new Date().toISOString(), syncState: 'pending' };
     setBusy(true); setMessage('');
     try {
       const gymId = machine.gymSlug || gymIdFor(machine.gymName);
-      const workout = await ensureActiveWorkout(gymId, machine.gymName);
-      item.workoutSessionId = workout.id;
       const savedWorkout = await appendWorkoutSet(gymId, machine.gymName, item);
       // Update the screen from the exact local value before attempting the network. Guest logging
       // therefore remains fully functional when anonymous auth or the API is unavailable.
       await onSaved(item, savedWorkout);
       setWeight(''); setReps(''); setSeat(''); setNotes('');
-      try { await recordSet(item, sessionId, session); item.syncState = 'synced'; await replaceWorkoutSet(item.clientLogId, { syncState: 'synced' }); setMessage('Set saved on this phone.'); }
+      setMessageTone('success'); setMessage('Set saved on this phone. Syncing…');
+      AccessibilityInfo.announceForAccessibility('Set saved on this phone');
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
+      try { await recordSet(item, sessionId, session); item.syncState = 'synced'; await replaceWorkoutSet(item.clientLogId, { syncState: 'synced' }); setMessage('Set saved.'); }
       catch { setMessage('Set saved on this phone. It will sync when your connection returns.'); }
     } catch (reason) {
+      setMessageTone('danger');
       setMessage(reason instanceof Error ? `Set was not saved: ${reason.message}` : 'Set was not saved. Free up storage and try again.');
     } finally { setBusy(false); }
   };
-  return <View><Card style={styles.logger}><View style={styles.twoCol}><View style={styles.flex}><Field label={`Weight (${preferences.weightUnit})`} value={weight} onChangeText={setWeight} keyboardType="decimal-pad" placeholder="Enter weight" /></View><View style={styles.flex}><Field label="Reps" value={reps} onChangeText={setReps} keyboardType="number-pad" placeholder="Enter reps" /></View></View><Field label="Seat or machine setting · optional" value={seat} onChangeText={setSeat} autoCapitalize="characters" placeholder="Example: 4, B, or 3C" maxLength={12} /><Field label="Notes · optional" value={notes} onChangeText={setNotes} placeholder="Form cue, tempo, or how it felt" maxLength={160} />{message ? <Notice tone={/saved\.$/i.test(message) ? 'success' : 'normal'}>{message}</Notice> : null}<Pressable accessibilityRole="button" onPress={save} disabled={busy || !weight || !reps} style={({ pressed }) => [styles.accentButton, { backgroundColor: accent }, (!weight || !reps) && styles.disabled, pressed && styles.pressed]}>{busy ? <ActivityIndicator color={colors.black} /> : <Text style={styles.accentButtonText}>Record top set</Text>}</Pressable></Card></View>;
+  return <View><Card style={styles.logger}><View style={styles.twoCol}><View style={styles.flex}><Field label={`Weight (${preferences.weightUnit})`} value={weight} onChangeText={setWeight} keyboardType="decimal-pad" placeholder="Enter weight" /></View><View style={styles.flex}><Field label="Reps" value={reps} onChangeText={setReps} keyboardType="number-pad" placeholder="Enter reps" /></View></View><Field label="Seat or machine setting · optional" value={seat} onChangeText={setSeat} autoCapitalize="characters" placeholder="Example: 4, B, or 3C" maxLength={12} /><Field label="Notes · optional" value={notes} onChangeText={setNotes} placeholder="Form cue, tempo, or how it felt" maxLength={160} />{message ? <Notice tone={messageTone}>{message}</Notice> : null}<Pressable accessibilityRole="button" onPress={save} disabled={busy || !weight || !reps} style={({ pressed }) => [styles.accentButton, { backgroundColor: accent }, (!weight || !reps) && styles.disabled, pressed && styles.pressed]}>{busy ? <ActivityIndicator color={colors.black} /> : <Text style={styles.accentButtonText}>Record top set</Text>}</Pressable></Card></View>;
 }
 
 function HistoryList({ history, unit, accent }: { history: MachineHistoryItem[]; unit: 'lb' | 'kg'; accent: string }) {
   const [selected, setSelected] = useState<MachineHistoryItem | null>(history[0] || null);
   const convert = (pounds: number) => unit === 'kg' ? `${(pounds / 2.2046226218).toFixed(1)} kg` : `${Number(pounds).toFixed(pounds % 1 ? 1 : 0)} lb`;
   const best = history.reduce((max, item) => Math.max(max, Number(item.weight_lb) || 0), 0);
-  const chart = history.slice(0, 8).reverse();
+  // Six points keep each touch column at least about 44 pt wide on compact phones.
+  const chart = history.slice(0, 6).reverse();
   return <View>{history.length ? <View style={styles.historyPanel}><View style={styles.progressTop}><View><Text style={styles.rowMeta}>HEAVIEST SET</Text><Text style={[styles.progressBest, { color: accent }]}>{convert(best)}</Text></View><Text style={styles.bodyMuted}>{plural(history.length, 'logged set')}</Text></View>{selected ? <View style={[styles.chartCallout, { borderColor: `${accent}88` }]}><View><Text style={styles.chartCalloutValue}>{convert(Number(selected.weight_lb))} × {selected.reps}</Text><Text style={styles.rowMeta}>{new Date(selected.occurred_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}{selected.seat_setting ? ` · setting ${selected.seat_setting}` : ''}</Text></View><Text style={styles.chartCalloutVolume}>{Math.round(Number(selected.weight_lb) * selected.reps).toLocaleString()} lb volume</Text></View> : null}<View style={styles.historyBars}>{chart.map((item, index) => { const active = selected === item; return <Pressable accessibilityRole="button" accessibilityLabel={`${convert(Number(item.weight_lb))}, ${item.reps} reps, ${new Date(item.occurred_at).toLocaleDateString()}`} onPress={() => setSelected(item)} key={item.id || `${item.occurred_at}-${index}`} style={styles.historyBarColumn}><View style={[styles.historyBar, { height: Math.max(12, Number(item.weight_lb) / Math.max(best, 1) * 94), backgroundColor: accent, opacity: active ? 1 : .48 }, active && styles.historyBarSelected]} /><Text style={[styles.historyBarDate, active && { color: accent }]}>{new Date(item.occurred_at).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })}</Text></Pressable>; })}</View><View style={styles.list}>{history.slice(0, 10).map((item, index) => <Pressable onPress={() => setSelected(item)} key={item.id || `${item.occurred_at}-${index}`} style={styles.historyRow}><View><Text style={styles.rowTitle}>{convert(Number(item.weight_lb))} × {item.reps}</Text><Text style={styles.rowMeta}>{new Date(item.occurred_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}{item.seat_setting ? ` · setting ${item.seat_setting}` : ''}</Text></View><Text style={styles.historyVolume}>{Math.round(Number(item.weight_lb) * item.reps).toLocaleString()} lb</Text></Pressable>)}</View></View> : <EmptyRow icon="trending-up-outline" title="No history yet" copy="Your first set on this exercise will start the chart." />}</View>;
 }
 
@@ -476,7 +507,7 @@ function MachineTabs({ tab, onChange, accent, historyCount }: { tab: MachineTab;
     { id: 'progress', label: historyCount ? `Progress · ${historyCount}` : 'Progress' },
     { id: 'howto', label: 'How to' }
   ];
-  return <View accessibilityRole="tablist" style={styles.machineTabs}>{tabs.map((item) => { const active = tab === item.id; return <Pressable key={item.id} accessibilityRole="tab" accessibilityState={{ selected: active }} onPress={() => onChange(item.id)} style={[styles.machineTab, active && { backgroundColor: accent }]}><Text numberOfLines={1} style={[styles.machineTabText, active && styles.machineTabTextActive]}>{item.label}</Text></Pressable>; })}</View>;
+  return <View accessibilityRole="tablist" style={styles.machineTabs}>{tabs.map((item) => { const active = tab === item.id; return <Pressable key={item.id} accessibilityRole="tab" accessibilityLabel={item.label} accessibilityState={{ selected: active }} onPress={() => { if (!active) { void Haptics.selectionAsync().catch(() => undefined); onChange(item.id); } }} style={[styles.machineTab, active && { backgroundColor: accent }]}><Text numberOfLines={1} style={[styles.machineTabText, active && styles.machineTabTextActive]}>{item.label}</Text></Pressable>; })}</View>;
 }
 
 function PlayableVideo({ url, accent }: { url: string; accent: string }) {
@@ -511,21 +542,22 @@ function nfcError(reason: unknown) { const message = reason instanceof Error ? r
 
 const styles = StyleSheet.create({
   machineTabs: { flexDirection: 'row', gap: 4, padding: 4, borderRadius: 999, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
-  machineTab: { flex: 1, minHeight: 44, borderRadius: 999, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
+  machineTab: { flex: 1, minHeight: 48, borderRadius: 999, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
   machineTabText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 14 }, machineTabTextActive: { color: colors.onLime },
   howTo: { gap: 28 },
   gymLogoImage: { resizeMode: 'cover' },
   timerDock: { paddingHorizontal: 20, paddingTop: 8 }, workoutClock: { color: colors.lime, fontFamily: fonts.bold, fontSize: 56, lineHeight: 60, letterSpacing: -1.7, fontVariant: ['tabular-nums'] },
   connectText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 13 }, connectTextOn: { color: colors.lime },
-  safe: { flex: 1, backgroundColor: colors.forest }, app: { flex: 1 }, flex: { flex: 1 }, centered: { alignItems: 'center', justifyContent: 'center', gap: 16, padding: 24 }, screen: { padding: 20, paddingBottom: 38, gap: 24 }, machineScreen: { padding: 20, paddingBottom: 52, gap: 28 },
+  safe: { flex: 1, backgroundColor: colors.forest }, app: { flex: 1 }, flex: { flex: 1 }, centered: { alignItems: 'center', justifyContent: 'center', gap: 16, padding: 24 }, screen: { width: '100%', maxWidth: 720, alignSelf: 'center', padding: 20, paddingBottom: 38, gap: 24 }, machineScreen: { width: '100%', maxWidth: 720, alignSelf: 'center', padding: 20, paddingBottom: 52, gap: 28 },
   pageHeader: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, pageTitle: { color: colors.cream, fontSize: 34, lineHeight: 40, fontFamily: fonts.bold, letterSpacing: -1.0 }, brandMark: { width: 44, height: 44, borderRadius: 14, backgroundColor: colors.panel, alignItems: 'center', justifyContent: 'center' },
   bodyMuted: { fontFamily: fonts.regular, color: colors.muted, fontSize: 15, lineHeight: 22 }, centerCopy: { fontFamily: fonts.regular, color: colors.muted, fontSize: 15, lineHeight: 22, textAlign: 'center' }, rowTitle: { color: colors.cream, fontSize: 16, lineHeight: 21, fontFamily: fonts.semibold }, rowMeta: { fontFamily: fonts.regular, color: colors.muted, fontSize: 12, lineHeight: 18 }, list: { borderRadius: 16, overflow: 'hidden', backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
   emptyHero: { minHeight: 250, borderRadius: 16, backgroundColor: colors.black, padding: 24, justifyContent: 'flex-end', gap: 14 }, emptyIcon: { width: 52, height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.lime }, heroTitle: { color: colors.cream, fontSize: 30, lineHeight: 34, fontFamily: fonts.bold, letterSpacing: -0.9, maxWidth: 310 },
   workoutPanel: { borderRadius: 16, backgroundColor: colors.black, padding: 20, gap: 18 }, workoutTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }, workoutTitle: { color: colors.cream, fontSize: 20, fontFamily: fonts.bold }, liveBadge: { flexDirection: 'row', gap: 7, alignItems: 'center', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 999, backgroundColor: colors.panel }, liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.mint }, liveLabel: { color: colors.mint, fontSize: 10, fontFamily: fonts.bold, letterSpacing: 1 }, workoutMetrics: { flexDirection: 'row', borderTopWidth: 1, borderBottomWidth: 1, borderColor: colors.border, paddingVertical: 16 }, metric: { flex: 1, gap: 3 }, metricValue: { color: colors.cream, fontSize: 21, fontFamily: fonts.bold }, metricLabel: { fontFamily: fonts.regular, color: colors.muted, fontSize: 10, textTransform: 'uppercase', letterSpacing: .7 }, compactSets: { gap: 12 }, compactSet: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, syncBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: 999, backgroundColor: colors.panelRaised, paddingHorizontal: 8, paddingVertical: 5 }, syncBadgeSynced: { backgroundColor: colors.mint }, syncText: { color: colors.cream, fontSize: 10, fontFamily: fonts.semibold }, syncTextSynced: { color: colors.black },
+  planPrompt: { minHeight: 76, borderRadius: 16, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, padding: 14, flexDirection: 'row', alignItems: 'center', gap: 13 }, planPromptIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center' },
   equipmentRow: { minHeight: 70, flexDirection: 'row', alignItems: 'center', gap: 13, padding: 13, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border }, equipmentGlyph: { width: 44, height: 44, borderRadius: 14, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center' }, emptyRow: { minHeight: 82, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16 }, historyRow: { minHeight: 67, padding: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border }, historyVolume: { color: colors.cream, fontSize: 13, fontFamily: fonts.semibold },
-  scanStage: { minHeight: 350, backgroundColor: colors.black, borderRadius: 16, padding: 24, justifyContent: 'center', gap: 17 }, scanRings: { alignSelf: 'center', width: 146, height: 146, borderRadius: 73, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, scanRingsInner: { width: 100, height: 100, borderRadius: 50, borderWidth: 1, borderColor: colors.lime, backgroundColor: colors.panel, alignItems: 'center', justifyContent: 'center' }, scanTitle: { color: colors.cream, textAlign: 'center', fontSize: 26, fontFamily: fonts.bold , letterSpacing: -0.8 }, divider: { flexDirection: 'row', alignItems: 'center', gap: 12 }, dividerLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.border }, dividerText: { color: colors.muted, fontSize: 10, fontFamily: fonts.bold, letterSpacing: 1.1 }, formCard: { gap: 16 },
+  scanStage: { minHeight: 350, backgroundColor: colors.black, borderRadius: 16, padding: 24, justifyContent: 'center', gap: 17 }, scanRings: { alignSelf: 'center', width: 146, height: 146, borderRadius: 73, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, scanPulse: { position: 'absolute', width: 146, height: 146, borderRadius: 73, borderWidth: 2, borderColor: colors.lime }, scanRingsInner: { width: 100, height: 100, borderRadius: 50, borderWidth: 1, borderColor: colors.lime, backgroundColor: colors.panel, alignItems: 'center', justifyContent: 'center' }, scanTitle: { color: colors.cream, textAlign: 'center', fontSize: 26, fontFamily: fonts.bold , letterSpacing: -0.8 }, divider: { flexDirection: 'row', alignItems: 'center', gap: 12 }, dividerLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.border }, dividerText: { color: colors.muted, fontSize: 10, fontFamily: fonts.bold, letterSpacing: 1.1 }, formCard: { gap: 16 },
   partnerMap: { height: 220, borderRadius: 16, overflow: 'hidden', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border }, mapRoad: { position: 'absolute', height: 8, borderRadius: 8, backgroundColor: '#2A2E30', opacity: .5 }, mapRoadA: { width: 330, top: 85, left: -35, transform: [{ rotate: '-16deg' }] }, mapRoadB: { width: 280, top: 130, right: -40, transform: [{ rotate: '28deg' }] }, mapPin: { position: 'absolute', top: 72, left: '46%', width: 46, height: 46, borderRadius: 16, backgroundColor: '#F2C44D', borderWidth: 4, borderColor: '#090909', alignItems: 'center', justifyContent: 'center' }, mapCaption: { position: 'absolute', left: 16, bottom: 16, right: 16, borderRadius: 14, backgroundColor: '#08090AEE', padding: 13 }, mapCaptionTitle: { color: colors.cream, fontSize: 14, fontFamily: fonts.bold }, mapCaptionCopy: { fontFamily: fonts.regular, color: colors.muted, fontSize: 12, marginTop: 2 }, gymPanel: { borderRadius: 16, borderWidth: 1, padding: 18, gap: 16 }, gymHead: { flexDirection: 'row', alignItems: 'center', gap: 13 }, gymLogo: { width: 52, height: 52, borderRadius: 16, borderWidth: 1, backgroundColor: '#111', alignItems: 'center', justifyContent: 'center' }, gymLogoText: { fontSize: 24, fontFamily: fonts.bold , letterSpacing: -0.7 }, gymTitle: { color: '#F6F0E4', fontSize: 20, fontFamily: fonts.bold }, gymAddress: { fontFamily: fonts.regular, color: '#BFB8AA', fontSize: 12, marginTop: 3 }, favorite: { width: 44, height: 44, borderRadius: 14, borderWidth: 1, borderColor: '#F2C44D', alignItems: 'center', justifyContent: 'center' }, gymStats: { flexDirection: 'row', gap: 8 }, gymStat: { fontFamily: fonts.regular, color: '#D6CDAF', fontSize: 11, borderWidth: 1, borderColor: '#5C4A22', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 999 }, gymActions: { flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#5C4A22', paddingTop: 14 }, gymAction: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 7 }, gymActionText: { fontSize: 13, fontFamily: fonts.bold }, equipmentSection: { gap: 14 }, equipmentCount: { fontFamily: fonts.regular, color: colors.muted, fontSize: 12 }, catalogRow: { minHeight: 66, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border }, stationCode: { width: 42, height: 42, borderRadius: 13, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center' }, stationCodeText: { color: colors.lime, fontSize: 12, fontFamily: fonts.bold },
-  profileIdentity: { flexDirection: 'row', gap: 14, alignItems: 'center' }, avatar: { width: 58, height: 58, borderRadius: 16, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, profileName: { color: colors.cream, fontSize: 19, fontFamily: fonts.bold }, authCard: { gap: 15 }, authCardTitle: { color: colors.cream, fontSize: 21, fontFamily: fonts.bold }, settingRow: { minHeight: 72, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, flexDirection: 'row', alignItems: 'center', gap: 13, padding: 14 }, settingIcon: { width: 40, height: 40, borderRadius: 13, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center' }, segment: { flexDirection: 'row', padding: 3, borderRadius: 12, backgroundColor: colors.black }, segmentItem: { minWidth: 46, minHeight: 36, borderRadius: 9, alignItems: 'center', justifyContent: 'center' }, segmentActive: { backgroundColor: colors.lime }, segmentText: { color: colors.muted, fontSize: 13, fontFamily: fonts.bold }, segmentTextActive: { color: colors.black },
+  profileIdentity: { flexDirection: 'row', gap: 14, alignItems: 'center' }, avatar: { width: 58, height: 58, borderRadius: 16, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, profileName: { color: colors.cream, fontSize: 19, fontFamily: fonts.bold }, authCard: { gap: 15 }, authCardTitle: { color: colors.cream, fontSize: 21, fontFamily: fonts.bold }, settingRow: { minHeight: 72, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, flexDirection: 'row', alignItems: 'center', gap: 13, padding: 14 }, settingIcon: { width: 40, height: 40, borderRadius: 13, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center' }, segment: { flexDirection: 'row', padding: 3, borderRadius: 12, backgroundColor: colors.black }, segmentItem: { minWidth: 48, minHeight: 48, borderRadius: 9, alignItems: 'center', justifyContent: 'center' }, segmentActive: { backgroundColor: colors.lime }, segmentText: { color: colors.muted, fontSize: 13, fontFamily: fonts.bold }, segmentTextActive: { color: colors.black },
   machineNav: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, backButton: { width: 44, height: 44, borderRadius: 14, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, gymChip: { minHeight: 38, flexDirection: 'row', alignItems: 'center', gap: 7, borderRadius: 999, borderWidth: 1, paddingHorizontal: 12 }, gymChipDot: { width: 7, height: 7, borderRadius: 4 }, gymChipText: { color: colors.cream, fontSize: 11, fontFamily: fonts.semibold }, machineCategory: { color: colors.dim, fontSize: 11, lineHeight: 16, fontFamily: fonts.bold, letterSpacing: 1.2 }, machineTitle: { color: colors.cream, fontSize: 38, lineHeight: 42, fontFamily: fonts.bold, letterSpacing: -1.1, marginVertical: 5 }, videoFrame: { minHeight: 250, borderRadius: 16, overflow: 'hidden', backgroundColor: '#050607', borderWidth: 1 }, video: { width: '100%', aspectRatio: 16 / 9, minHeight: 250 }, videoLabel: { position: 'absolute', left: 12, top: 12, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 999, backgroundColor: '#08090AE8' }, videoDot: { width: 7, height: 7, borderRadius: 4 }, videoLabelText: { color: colors.cream, fontSize: 9, fontFamily: fonts.bold, letterSpacing: .8 }, videoMissing: { minHeight: 220, borderRadius: 16, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 22, backgroundColor: colors.black, borderWidth: 1, borderColor: colors.border }, videoMissingTitle: { color: colors.cream, fontSize: 21, fontFamily: fonts.bold }, instructions: { gap: 12, marginTop: 14 }, instruction: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' }, stepNumber: { width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center' }, stepNumberText: { color: colors.black, fontSize: 12, fontFamily: fonts.bold }, instructionText: { fontFamily: fonts.regular, flex: 1, color: colors.cream, fontSize: 15, lineHeight: 22 }, muscleCopy: { backgroundColor: colors.panel, borderRadius: 16, padding: 16, marginTop: 10 }, logger: { gap: 16 }, twoCol: { flexDirection: 'row', gap: 12 }, accentButton: { minHeight: 54, borderRadius: 16, alignItems: 'center', justifyContent: 'center' }, accentButtonText: { color: colors.black, fontSize: 16, fontFamily: fonts.bold }, disabled: { opacity: .45 }, pressed: { opacity: .88, transform: [{ scale: .99 }] }, historyPanel: {backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 16, overflow: 'hidden' }, progressTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', padding: 16 }, progressBest: { fontSize: 30, fontFamily: fonts.bold, marginTop: 3 , letterSpacing: -0.9 }, chartCallout: { marginHorizontal: 16, padding: 13, borderWidth: 1, borderRadius: 14, backgroundColor: colors.black, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12 }, chartCalloutValue: { color: colors.cream, fontSize: 16, fontFamily: fonts.bold }, chartCalloutVolume: { fontFamily: fonts.regular, color: colors.muted, fontSize: 11, textAlign: 'right' }, historyBars: { height: 130, flexDirection: 'row', alignItems: 'flex-end', gap: 8, paddingHorizontal: 16, paddingBottom: 12 }, historyBarColumn: { flex: 1, minHeight: 112, alignItems: 'center', justifyContent: 'flex-end', gap: 6 }, historyBar: { width: '76%', maxWidth: 28, borderRadius: 7 }, historyBarSelected: { borderWidth: 2, borderColor: colors.cream }, historyBarDate: { fontFamily: fonts.regular, color: colors.muted, fontSize: 8 }, exerciseGrid: { gap: 10 }, exerciseChoice: { minHeight: 76, flexDirection: 'row', alignItems: 'center', gap: 13, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, borderRadius: 16, padding: 14 }, exerciseIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center' },
   tabSafe: { backgroundColor: colors.black, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }, tabs: { height: 66, flexDirection: 'row', paddingHorizontal: 8 }, tab: { flex: 1, minHeight: 56, alignItems: 'center', justifyContent: 'center', gap: 4 }, tabText: { color: colors.muted, fontSize: 10, fontFamily: fonts.semibold }, tabTextActive: { color: colors.cream }
 });

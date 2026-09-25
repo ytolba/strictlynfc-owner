@@ -6,6 +6,9 @@ const ACTIVE_KEY = 'strictlyvision.member.active-workout.v1';
 const FINISHED_KEY = 'strictlyvision.member.finished-workouts.v1';
 const PREFERENCES_KEY = 'strictlyvision.member.preferences.v1';
 const RECENT_KEY = 'strictlyvision.member.recent-machines.v1';
+const DAILY_PLAN_KEY = 'strictlyvision.member.daily-plan.v1';
+// A workout left open this long was almost certainly forgotten.
+const STALE_WORKOUT_MS = 6 * 60 * 60 * 1000;
 
 export const newId = () => Crypto.randomUUID();
 
@@ -16,7 +19,10 @@ async function readJson<T>(key: string, fallback: T): Promise<T> {
 }
 
 export async function loadActiveWorkout() {
-  return readJson<WorkoutSession | null>(ACTIVE_KEY, null);
+  const workout = await readJson<WorkoutSession | null>(ACTIVE_KEY, null);
+  // Older builds began sessions on a tap. A session without sets is not a workout.
+  if (workout && !workout.sets.length) { await AsyncStorage.removeItem(ACTIVE_KEY); return null; }
+  return workout;
 }
 
 export async function saveActiveWorkout(workout: WorkoutSession | null) {
@@ -24,24 +30,15 @@ export async function saveActiveWorkout(workout: WorkoutSession | null) {
   return AsyncStorage.setItem(ACTIVE_KEY, JSON.stringify(workout));
 }
 
-// A workout left open this long was almost certainly forgotten; a new tap starts a fresh one.
-const STALE_WORKOUT_MS = 6 * 60 * 60 * 1000;
-
-export async function ensureActiveWorkout(gymId: string, gymName: string) {
-  const current = await loadActiveWorkout();
-  if (current && !current.finishedAt) {
-    const age = Date.now() - new Date(current.startedAt).getTime();
-    if (age < STALE_WORKOUT_MS) return current;
-    const lastSet = current.sets[current.sets.length - 1];
-    if (lastSet) await finishActiveWorkout(new Date(new Date(lastSet.createdAt).getTime() + 60_000).toISOString());
-  }
-  const next: WorkoutSession = { id: newId(), gymId, gymName, startedAt: new Date().toISOString(), sets: [] };
-  await saveActiveWorkout(next);
-  return next;
-}
-
 export async function appendWorkoutSet(gymId: string, gymName: string, set: WorkoutSet) {
-  const workout = await ensureActiveWorkout(gymId, gymName);
+  let workout = await loadActiveWorkout();
+  if (workout && (workout.finishedAt || Date.now() - Date.parse(workout.startedAt) >= STALE_WORKOUT_MS)) {
+    const lastSet = workout.sets[workout.sets.length - 1];
+    if (lastSet) await finishActiveWorkout(new Date(Date.parse(lastSet.createdAt) + 60_000).toISOString());
+    workout = null;
+  }
+  if (!workout) workout = { id: newId(), gymId, gymName, startedAt: set.createdAt, sets: [] };
+  set.workoutSessionId = workout.id;
   const next = { ...workout, sets: [...workout.sets, set] };
   await saveActiveWorkout(next);
   return next;
@@ -125,5 +122,5 @@ export async function loadRecentMachines() {
 }
 
 export async function clearMemberData() {
-  await AsyncStorage.multiRemove([ACTIVE_KEY, FINISHED_KEY, PREFERENCES_KEY, RECENT_KEY]);
+  await AsyncStorage.multiRemove([ACTIVE_KEY, FINISHED_KEY, PREFERENCES_KEY, RECENT_KEY, DAILY_PLAN_KEY]);
 }

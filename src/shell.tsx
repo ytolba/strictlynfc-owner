@@ -2,6 +2,7 @@ import { useEffect, useState, type PropsWithChildren, type ReactNode } from 'rea
 import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import { isAppleSignInAvailable, isCanceled, loadEnabledProviders, signInWithApple, signInWithGoogle, type AuthProviders } from './auth';
 import { colors, fonts } from './theme';
@@ -11,7 +12,7 @@ export type IconName = keyof typeof Ionicons.glyphMap;
 export type TabItem<T extends string> = { id: T; label: string; icon: IconName; active: IconName };
 
 export function PageHeader({ title, action }: { title: string; action?: ReactNode }) {
-  return <View style={styles.pageHeader}><Text style={styles.pageTitle} numberOfLines={2}>{title}</Text>{action}</View>;
+  return <View style={styles.pageHeader}><Text accessibilityRole="header" style={styles.pageTitle} numberOfLines={2}>{title}</Text>{action}</View>;
 }
 
 export function BrandMark() {
@@ -47,7 +48,7 @@ export function ListRow({ badge, icon, title, meta, trailing, onPress }: { badge
 export function AppTabBar<T extends string>({ tabs, tab, onChange }: { tabs: TabItem<T>[]; tab: T; onChange: (tab: T) => void }) {
   return <SafeAreaView edges={['bottom']} style={styles.tabSafe}><View style={styles.tabs}>{tabs.map((item) => {
     const active = tab === item.id;
-    return <Pressable accessibilityRole="tab" accessibilityState={{ selected: active }} key={item.id} onPress={() => onChange(item.id)} style={styles.tab}><Ionicons name={active ? item.active : item.icon} size={22} color={active ? colors.lime : colors.muted} /><Text style={[styles.tabText, active && styles.tabTextActive]}>{item.label}</Text></Pressable>;
+    return <Pressable accessibilityRole="tab" accessibilityLabel={item.label} accessibilityState={{ selected: active }} key={item.id} onPress={() => { if (!active) { void Haptics.selectionAsync().catch(() => undefined); onChange(item.id); } }} style={styles.tab}><Ionicons name={active ? item.active : item.icon} size={22} color={active ? colors.lime : colors.muted} /><Text style={[styles.tabText, active && styles.tabTextActive]}>{item.label}</Text></Pressable>;
   })}</View></SafeAreaView>;
 }
 
@@ -97,7 +98,7 @@ const styles = StyleSheet.create({
   pageHeader: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   pageTitle: { flexShrink: 1, color: colors.text, fontSize: 34, lineHeight: 40, fontFamily: fonts.bold, letterSpacing: -1.0 },
   brandMark: { width: 44, height: 44, borderRadius: 14, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center' },
-  backButton: { width: 44, height: 44, borderRadius: 14, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+  backButton: { width: 48, height: 48, borderRadius: 14, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
   rowTitle: { color: colors.text, fontSize: 16, lineHeight: 21, fontFamily: fonts.semibold }, rowMeta: { fontFamily: fonts.regular, color: colors.muted, fontSize: 12, lineHeight: 18 },
   settingRow: { minHeight: 72, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, flexDirection: 'row', alignItems: 'center', gap: 13, padding: 14 },
   settingIcon: { width: 40, height: 40, borderRadius: 13, backgroundColor: colors.surfaceRaised, alignItems: 'center', justifyContent: 'center' },
@@ -107,7 +108,7 @@ const styles = StyleSheet.create({
   badge: { width: 44, height: 44, borderRadius: 14, backgroundColor: colors.surfaceRaised, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 }, badgeText: { color: colors.lime, fontSize: 12, fontFamily: fonts.bold },
   tabSafe: { backgroundColor: colors.black, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }, tabs: { height: 66, flexDirection: 'row', paddingHorizontal: 8 },
   tab: { flex: 1, minHeight: 56, alignItems: 'center', justifyContent: 'center', gap: 4 }, tabText: { color: colors.muted, fontSize: 10, fontFamily: fonts.semibold }, tabTextActive: { color: colors.text },
-  textLink: { alignSelf: 'center', minHeight: 44, justifyContent: 'center', paddingHorizontal: 12 }, textLinkText: { color: colors.lime, fontFamily: fonts.semibold, fontSize: 14 },
+  textLink: { alignSelf: 'center', minHeight: 48, justifyContent: 'center', paddingHorizontal: 12 }, textLinkText: { color: colors.lime, fontFamily: fonts.semibold, fontSize: 14 },
   divider: { flexDirection: 'row', alignItems: 'center', gap: 12 }, dividerLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.border }, dividerText: { color: colors.muted, fontSize: 10, fontFamily: fonts.bold, letterSpacing: 1.1 },
   social: { gap: 10 }, appleButton: { width: '100%', height: 52 },
   googleButton: { minHeight: 52, borderRadius: 999, borderWidth: 1, borderColor: colors.borderStrong, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 }, googleText: { color: colors.text, fontFamily: fonts.semibold, fontSize: 16 }

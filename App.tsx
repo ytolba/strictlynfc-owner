@@ -11,7 +11,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
 import { useFonts, SpaceGrotesk_400Regular, SpaceGrotesk_500Medium, SpaceGrotesk_600SemiBold, SpaceGrotesk_700Bold } from '@expo-google-fonts/space-grotesk';
 import type { Session } from '@supabase/supabase-js';
-import { assignTag, inviteOwner, loadDashboard, loadMachine, saveMachine, uploadMachineVideo } from './src/api';
+import { assignTag, deleteMachine, inviteOwner, loadDashboard, loadMachine, saveMachine, uploadMachineVideo } from './src/api';
 import { sendPasswordReset } from './src/auth';
 import { draftFromCatalog, MACHINE_CATALOG, type CatalogMachine } from './src/catalog';
 import { verifyUrlOnTag, writeUrlToTag } from './src/nfc';
@@ -94,7 +94,7 @@ export default function App() {
 function RoleChoiceScreen({ onMember, onOwner }: { onMember: () => void; onOwner: () => void }) {
   return (
     <SafeAreaView style={styles.safe}>
-      <View style={styles.roleScreen}>
+      <ScrollView contentContainerStyle={styles.roleScreen} keyboardShouldPersistTaps="handled">
         <Image source={require('./assets/strictlyvision-mark-transparent.png')} style={styles.roleLogo as ImageStyle} resizeMode="contain" />
         <View style={styles.roleIntro}><Text style={styles.roleBrand}>STRICTLYVISION</Text><Text style={styles.roleTitle}>The gym floor,{`\n`}connected to you.</Text><Text style={styles.roleCopy}>Train with any connected machine or manage the system behind your gym.</Text></View>
         <View style={styles.roleActions}>
@@ -102,7 +102,7 @@ function RoleChoiceScreen({ onMember, onOwner }: { onMember: () => void; onOwner
           <Pressable accessibilityRole="button" onPress={onOwner} style={({ pressed }) => [styles.roleSecondary, pressed && styles.pressed]}><View style={styles.roleOwnerIcon}><Ionicons name="business" size={22} color={colors.lime} /></View><View style={styles.flex}><Text style={styles.roleSecondaryTitle}>I manage a gym</Text><Text style={styles.roleSecondaryCopy}>Owner dashboard, equipment, analytics, and NFC setup.</Text></View><Ionicons name="chevron-forward" size={24} color={colors.cream} /></Pressable>
         </View>
         <Text style={styles.roleFine}>You can switch modes later. Owner tools remain invite-only.</Text>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -145,7 +145,7 @@ function OwnerApp({ session, onSwitchMember }: { session: Session; onSwitchMembe
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
-      <View style={styles.app}>{body}</View>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.app}>{body}</KeyboardAvoidingView>
       <AppTabBar tabs={OWNER_TABS} tab={tab} onChange={setTab} />
     </SafeAreaView>
   );
@@ -259,6 +259,32 @@ function MachinesScreen({ session, data, onChanged, onProgram, onCustom }: { ses
     setBusy(false);
   };
 
+  const runDelete = async (confirm: boolean) => {
+    if (!selected) return;
+    setBusy(true); setMessage('');
+    try {
+      const outcome = await deleteMachine(session, data.gym.id, selected.id, confirm);
+      if (outcome.ok) { setSelected(null); await onChanged(); }
+      else {
+        const history = [outcome.loggedSets ? `${outcome.loggedSets} logged set${outcome.loggedSets === 1 ? '' : 's'}` : '', outcome.taps ? `${outcome.taps} tap${outcome.taps === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ');
+        Alert.alert(
+          `Delete ${outcome.machineName}?`,
+          `Members have ${history} on this machine. Deleting it removes that history permanently, along with its tag. This cannot be undone.\n\nTo keep the history, set the machine to Retired instead.`,
+          [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete anyway', style: 'destructive', onPress: () => { void runDelete(true); } }]
+        );
+      }
+    } catch (reason) { setMessage(reason instanceof Error ? reason.message : 'Machine could not be deleted.'); }
+    setBusy(false);
+  };
+
+  const confirmDelete = () => {
+    if (!selected) return;
+    Alert.alert(`Delete ${selected.name}?`, 'This removes the machine and its tag from this gym.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => { void runDelete(false); } }
+    ]);
+  };
+
   if (selected) return (
     <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
       <IconBack onPress={() => { setSelected(null); setMessage(''); }} />
@@ -270,6 +296,7 @@ function MachinesScreen({ session, data, onChanged, onProgram, onCustom }: { ses
       <SectionTitle>Installed tags</SectionTitle>
       {selected.tags.length ? <List>{selected.tags.map((tag) => <ListRow key={tag.publicId} icon="radio-outline" title={tag.labelCode} meta={`${tag.type.toUpperCase()} · ${tag.status}`} trailing={<Ionicons name={tag.status === 'active' ? 'checkmark-circle' : 'ellipse-outline'} size={22} color={tag.status === 'active' ? colors.lime : colors.muted} />} />)}</List> : <EmptyRow icon="radio-outline" title="No tag yet" copy="Program a sticker so members can open this machine." />}
       <Button label="Program or replace tag" onPress={onProgram} tone="secondary" />
+      <Button label="Delete machine" onPress={confirmDelete} tone="danger" disabled={busy} />
     </ScrollView>
   );
 
@@ -470,7 +497,7 @@ function nfcMessage(reason: unknown) { const raw = reason instanceof Error ? rea
 // Values mirror the member screens (src/member/MemberApp.tsx) so both modes share one visual system.
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg }, app: { flex: 1 }, flex: { flex: 1 }, center: { textAlign: 'center' },
-  screen: { padding: 20, paddingBottom: 38, gap: 24 }, loading: { alignItems: 'center', justifyContent: 'center', gap: 18 }, errorWrap: { flex: 1, justifyContent: 'center', gap: 16 },
+  screen: { width: '100%', maxWidth: 760, alignSelf: 'center', padding: 20, paddingBottom: 38, gap: 24 }, loading: { alignItems: 'center', justifyContent: 'center', gap: 18 }, errorWrap: { flex: 1, justifyContent: 'center', gap: 16 },
   gap6: { gap: 6 }, gap10: { gap: 10 }, twoCol: { flexDirection: 'row', gap: 12 }, chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, formCard: { gap: 16 },
   bodyMuted: { fontFamily: fonts.regular, color: colors.muted, fontSize: 15, lineHeight: 22 }, centerCopy: { fontFamily: fonts.regular, color: colors.muted, fontSize: 15, lineHeight: 22, textAlign: 'center' },
   kicker: { color: colors.dim, fontSize: 11, lineHeight: 16, fontFamily: fonts.bold, letterSpacing: 1.2 }, detailTitle: { color: colors.text, fontSize: 38, lineHeight: 42, fontFamily: fonts.bold, letterSpacing: -1.1, marginTop: 5 },
@@ -487,5 +514,5 @@ const styles = StyleSheet.create({
   nfcTitle: { color: colors.text, fontSize: 26, fontFamily: fonts.bold, textAlign: 'center', letterSpacing: -0.8 }, nfcStation: { color: colors.lime, fontSize: 11, fontFamily: fonts.bold, letterSpacing: 1.2, textAlign: 'center' }, urlBox: { backgroundColor: colors.surface, padding: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.border }, urlText: { fontFamily: fonts.regular, color: colors.text, textAlign: 'center', fontSize: 13 },
   successScreen: { justifyContent: 'center', minHeight: '100%' }, successCircle: { alignSelf: 'center', width: 96, height: 96, borderRadius: 48, backgroundColor: colors.lime, alignItems: 'center', justifyContent: 'center' }, successTitle: { color: colors.text, fontSize: 34, lineHeight: 40, fontFamily: fonts.bold, textAlign: 'center', letterSpacing: -1.0 },
   identity: { flexDirection: 'row', gap: 14, alignItems: 'center' }, avatar: { width: 58, height: 58, borderRadius: 16, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, identityName: { color: colors.text, fontSize: 19, fontFamily: fonts.bold },
-  roleScreen: { flex: 1, padding: 24, paddingTop: 38, paddingBottom: 22, justifyContent: 'space-between' }, roleLogo: { width: 64, height: 64 }, roleIntro: { gap: 14, marginTop: 'auto', marginBottom: 34 }, roleBrand: { color: colors.dim, fontSize: 12, lineHeight: 16, fontFamily: fonts.bold, letterSpacing: 2.2 }, roleTitle: { color: colors.cream, fontSize: 43, lineHeight: 46, fontFamily: fonts.bold, letterSpacing: -1.3 }, roleCopy: { fontFamily: fonts.regular, color: colors.muted, fontSize: 17, lineHeight: 25, maxWidth: 430 }, roleActions: { gap: 12 }, rolePrimary: { minHeight: 102, borderRadius: 16, padding: 16, backgroundColor: colors.lime, flexDirection: 'row', alignItems: 'center', gap: 13 }, roleActionIcon: { width: 48, height: 48, borderRadius: 15, backgroundColor: 'rgba(7,10,2,0.12)', alignItems: 'center', justifyContent: 'center' }, rolePrimaryTitle: { color: colors.black, fontSize: 19, fontFamily: fonts.bold }, rolePrimaryCopy: { fontFamily: fonts.regular, color: '#2B3510', fontSize: 12, lineHeight: 17, marginTop: 3 }, roleSecondary: { minHeight: 102, borderRadius: 16, padding: 16, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, flexDirection: 'row', alignItems: 'center', gap: 13 }, roleOwnerIcon: { width: 48, height: 48, borderRadius: 15, backgroundColor: colors.panelRaised, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, roleSecondaryTitle: { color: colors.cream, fontSize: 19, fontFamily: fonts.bold }, roleSecondaryCopy: { fontFamily: fonts.regular, color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 3 }, roleFine: { fontFamily: fonts.regular, color: colors.muted, fontSize: 11, lineHeight: 16, textAlign: 'center', marginTop: 17 }
+  roleScreen: { flexGrow: 1, width: '100%', maxWidth: 760, alignSelf: 'center', padding: 24, paddingTop: 38, paddingBottom: 22, justifyContent: 'space-between' }, roleLogo: { width: 64, height: 64 }, roleIntro: { gap: 14, marginTop: 'auto', marginBottom: 34 }, roleBrand: { color: colors.dim, fontSize: 12, lineHeight: 16, fontFamily: fonts.bold, letterSpacing: 2.2 }, roleTitle: { color: colors.cream, fontSize: 43, lineHeight: 46, fontFamily: fonts.bold, letterSpacing: -1.3 }, roleCopy: { fontFamily: fonts.regular, color: colors.muted, fontSize: 17, lineHeight: 25, maxWidth: 430 }, roleActions: { gap: 12 }, rolePrimary: { minHeight: 102, borderRadius: 16, padding: 16, backgroundColor: colors.lime, flexDirection: 'row', alignItems: 'center', gap: 13 }, roleActionIcon: { width: 48, height: 48, borderRadius: 15, backgroundColor: 'rgba(7,10,2,0.12)', alignItems: 'center', justifyContent: 'center' }, rolePrimaryTitle: { color: colors.black, fontSize: 19, fontFamily: fonts.bold }, rolePrimaryCopy: { fontFamily: fonts.regular, color: '#2B3510', fontSize: 12, lineHeight: 17, marginTop: 3 }, roleSecondary: { minHeight: 102, borderRadius: 16, padding: 16, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, flexDirection: 'row', alignItems: 'center', gap: 13 }, roleOwnerIcon: { width: 48, height: 48, borderRadius: 15, backgroundColor: colors.panelRaised, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, roleSecondaryTitle: { color: colors.cream, fontSize: 19, fontFamily: fonts.bold }, roleSecondaryCopy: { fontFamily: fonts.regular, color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 3 }, roleFine: { fontFamily: fonts.regular, color: colors.muted, fontSize: 11, lineHeight: 16, textAlign: 'center', marginTop: 17 }
 });

@@ -14,7 +14,7 @@ export function Button({ label, onPress, tone = 'lime', disabled, loading, compa
   label: string; onPress: () => void; tone?: 'lime' | 'secondary' | 'danger'; disabled?: boolean; loading?: boolean; compact?: boolean;
 }) {
   return (
-    <Pressable accessibilityRole="button" onPress={onPress} disabled={disabled || loading} style={({ pressed }) => [
+    <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled: !!(disabled || loading), busy: !!loading }} onPress={onPress} disabled={disabled || loading} style={({ pressed }) => [
       styles.button, compact && styles.buttonCompact, tone === 'secondary' && styles.buttonSecondary,
       tone === 'danger' && styles.buttonDanger, pressed && tone === 'lime' && styles.buttonLimePressed,
       pressed && tone !== 'lime' && styles.buttonGhostPressed, (disabled || loading) && styles.disabled, pressed && styles.pressed
@@ -30,6 +30,7 @@ export function Field({ label, hint, multiline, ...props }: TextInputProps & { l
       <Text style={styles.fieldLabel}>{label}</Text>
       <TextInput
         {...props}
+        accessibilityLabel={props.accessibilityLabel || label}
         multiline={multiline}
         placeholderTextColor={colors.dim}
         selectionColor={colors.lime}
@@ -45,11 +46,11 @@ export function Notice({ children, tone = 'normal' }: PropsWithChildren<{ tone?:
 }
 
 export function SectionTitle({ children, action }: PropsWithChildren<{ action?: ReactNode }>) {
-  return <View style={styles.sectionHead}><Text style={styles.sectionTitle}>{children}</Text>{action}</View>;
+  return <View style={styles.sectionHead}><Text accessibilityRole="header" style={styles.sectionTitle}>{children}</Text>{action}</View>;
 }
 
 export function Chip({ label, selected, onPress }: { label: string; selected?: boolean; onPress?: () => void }) {
-  return <Pressable onPress={onPress} disabled={!onPress} style={[styles.chip, selected && styles.chipSelected]}><Text style={[styles.chipText, selected && styles.chipTextSelected]}>{label}</Text></Pressable>;
+  return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: !!selected, disabled: !onPress }} onPress={onPress} disabled={!onPress} style={[styles.chip, selected && styles.chipSelected]}><Text style={[styles.chipText, selected && styles.chipTextSelected]}>{label}</Text></Pressable>;
 }
 
 const styles = StyleSheet.create({
@@ -72,6 +73,6 @@ const styles = StyleSheet.create({
   noticeText: { color: colors.text, fontFamily: fonts.regular, fontSize: 14, lineHeight: 20 },
   sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   sectionTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: 22, lineHeight: 27, letterSpacing: -0.5 },
-  chip: { borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 9, minHeight: 40, justifyContent: 'center', backgroundColor: 'transparent', borderWidth: 1, borderColor: colors.borderStrong },
+  chip: { borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 9, minHeight: 48, justifyContent: 'center', backgroundColor: 'transparent', borderWidth: 1, borderColor: colors.borderStrong },
   chipSelected: { backgroundColor: colors.lime, borderColor: colors.lime }, chipText: { color: colors.text, fontFamily: fonts.medium, fontSize: 13 }, chipTextSelected: { color: colors.onLime }
 });

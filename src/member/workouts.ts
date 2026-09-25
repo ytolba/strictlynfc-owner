@@ -4,7 +4,7 @@ import { newId } from './storage';
 import type { WorkoutSession } from './types';
 
 // Workouts are written straight to Supabase (RLS: members can only touch their own rows).
-// Called when the first tag starts a workout and again when it finishes; the upsert is idempotent.
+// Called after the first saved set and again when the workout finishes; the upsert is idempotent.
 export async function saveWorkoutToCloud(session: Session | null, workout: WorkoutSession) {
   if (!session) return false;
   const exerciseCount = new Set(workout.sets.map((set) => `${set.publicId}:${set.exerciseSlug || ''}`)).size;

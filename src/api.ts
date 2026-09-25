@@ -38,6 +38,24 @@ export async function loadMachine(session: Session, gymId: string, machineId: st
   return parsed<{ machine: Machine }>(response);
 }
 
+export type DeleteMachineOutcome =
+  | { ok: true; machineName: string; loggedSets: number; taps: number }
+  | { ok: false; requiresConfirmation: true; error: string; machineName: string; loggedSets: number; taps: number };
+
+/**
+ * Deleting a machine cascades to its tags, taps, and logged sets, so the
+ * worker refuses the first call when member history exists and reports the
+ * counts instead. Call again with confirm once the owner has seen them.
+ */
+export async function deleteMachine(session: Session, gymId: string, machineId: string, confirm = false): Promise<DeleteMachineOutcome> {
+  const query = `gymId=${encodeURIComponent(gymId)}&machineId=${encodeURIComponent(machineId)}${confirm ? '&confirm=1' : ''}`;
+  const response = await fetch(`${API_URL}/api/owner/machine?${query}`, { method: 'DELETE', headers: authHeaders(session, false) });
+  const body = await response.json().catch(() => ({}));
+  if (response.status === 409 && body.requiresConfirmation) return { ok: false, ...body } as DeleteMachineOutcome;
+  if (!response.ok) throw new Error(body.error || body.message || 'Machine could not be deleted.');
+  return body as DeleteMachineOutcome;
+}
+
 export async function assignTag(session: Session, gymId: string, machineId: string, tag: MachineTag) {
   const response = await fetch(`${API_URL}/api/owner/tag`, {
     method: 'POST', headers: authHeaders(session), body: JSON.stringify({
