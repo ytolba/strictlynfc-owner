@@ -15,8 +15,7 @@
         "applinks:strictlyinc.com"
       ],
       "infoPlist": {
-        "NFCReaderUsageDescription": "StrictlyVision uses NFC to open connected gym equipment and to program tags for approved gym owners.",
-        "NSPhotoLibraryUsageDescription": "StrictlyVision does not access your photo library. Gym owners choose demonstration videos from Files."
+        "NFCReaderUsageDescription": "StrictlyVision uses NFC to open connected gym equipment and to program tags for approved gym owners."
       },
       "entitlements": {
         "com.apple.developer.nfc.readersession.formats": [
@@ -109,17 +108,12 @@
       ],
       [
         "expo-secure-store",
-        {
-          "faceIDPermission": "StrictlyVision does not use Face ID."
-        }
+        {}
       ],
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "StrictlyVision uses your location only while the app is open to show the partner gym closest to you.",
-          "locationAlwaysAndWhenInUsePermission": "StrictlyVision uses your location only while the app is open to show the partner gym closest to you. It does not track your location in the background.",
-          "locationAlwaysPermission": "StrictlyVision uses your location only while the app is open to show the partner gym closest to you. It does not track your location in the background.",
-          "motionUsagePermission": "StrictlyVision does not use motion or fitness activity data from your device."
+          "locationWhenInUsePermission": "StrictlyVision uses your location only while the app is open to show the partner gym closest to you."
         }
       ],
       "./plugins/withPlayCompliance",
