@@ -10,13 +10,15 @@ import { useReduceMotion } from '../motion';
 import { supabase } from '../supabase';
 import { ensureMemberSession } from './session';
 import type { MemberPreferences, PartnerGym, WorkoutSession } from './types';
+// Same corrector the planner function uses, so the hint here matches what the server will plan for.
+import { correctFocus } from '../../supabase/functions/generate-workout/focusSpelling';
 
 export type PlannedExercise = {
   publicId: string; exerciseSlug: string | null; name: string; stationName: string; stationCode: string;
   primaryMuscles: string[]; targetArea?: string; sets: number; reps: string;
 };
 export type DailyPlan = {
-  gymId: string; gymName: string; createdAt: string; validUntil: string; focus: string; intent: string; durationMinutes: number;
+  gymId: string; gymName: string; createdAt: string; validUntil: string; focus: string; typedFocus?: string; intent: string; durationMinutes: number;
   coverage?: { covered: string[]; deferred?: string[]; missing: string[] };
   pacing?: { totalSets: number; estimatedMinutes: number; emphasis: string; recovery: string };
   exercises: PlannedExercise[];
@@ -39,7 +41,7 @@ function isPlan(value: unknown): value is DailyPlan {
     && plan.exercises.every((item) => typeof item.publicId === 'string' && typeof item.name === 'string' && Number.isInteger(item.sets));
 }
 
-async function loadDailyPlan(userId: string, gymId: string): Promise<DailyPlan | null> {
+export async function loadDailyPlan(userId: string, gymId: string): Promise<DailyPlan | null> {
   try {
     const raw = await AsyncStorage.getItem(planKey(userId, gymId));
     if (!raw) return null;
@@ -53,9 +55,15 @@ export async function clearDailyPlan() {
   if (keys.length) await AsyncStorage.multiRemove(keys);
 }
 
-export function WorkoutPlanner({ gyms, preferences, userId, workout, onOpen }: {
+// The first planned exercise with no sets logged in today's workout.
+export function nextPlannedExercise(plan: DailyPlan, workout: WorkoutSession | null) {
+  return plan.exercises.find((item) => !workout?.sets.some((set) => set.publicId === item.publicId && (set.exerciseSlug || '') === (item.exerciseSlug || ''))) || null;
+}
+
+export function WorkoutPlanner({ gyms, preferences, userId, workout, onOpen, onPlanChange, onScan, scanning, scanMessage }: {
   gyms: PartnerGym[]; preferences: MemberPreferences; userId: string | null; workout: WorkoutSession | null;
   onOpen: (publicId: string, exerciseSlug?: string) => void;
+  onPlanChange: (plan: DailyPlan | null) => void; onScan: () => void; scanning: boolean; scanMessage: string;
 }) {
   const preferred = gyms.find((gym) => preferences.favoriteGymIds.includes(gym.id)) || gyms[0];
   const [gymId, setGymId] = useState(preferred?.id || '');
@@ -68,7 +76,20 @@ export function WorkoutPlanner({ gyms, preferences, userId, workout, onOpen }: {
   const [view, setView] = useState<'form' | 'plan'>('form');
   const autoOpened = useRef(false);
   const reducedMotion = useReduceMotion();
+  // "Did you mean" waits until typing pauses and only appears when a word isn't understood.
+  const [typoSuggestion, setTypoSuggestion] = useState<string | null>(null);
+  useEffect(() => {
+    setTypoSuggestion(null);
+    const typed = focus.trim();
+    if (!typed || FOCUS_OPTIONS.some((option) => option.label.toLowerCase() === typed.toLowerCase())) return;
+    const timer = setTimeout(() => {
+      const spelling = correctFocus(typed, { asking: true });
+      setTypoSuggestion(spelling.corrections.length ? spelling.text : null);
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [focus]);
   const reveal = useRef(new Animated.Value(1)).current;
+  useEffect(() => { onPlanChange(plan && Date.parse(plan.validUntil) > Date.now() ? plan : null); }, [plan]);
 
   useEffect(() => () => reveal.stopAnimation(), [reveal]);
   useEffect(() => { if (reducedMotion) { reveal.stopAnimation(); reveal.setValue(1); } }, [reducedMotion, reveal]);
@@ -145,12 +166,14 @@ export function WorkoutPlanner({ gyms, preferences, userId, workout, onOpen }: {
 
   if (view === 'plan' && activePlan) {
     const plan = activePlan;
+    const next = nextPlannedExercise(plan, workout);
     const done = plan.exercises.filter((item) => workout?.sets.some((set) => set.publicId === item.publicId && (set.exerciseSlug || '') === (item.exerciseSlug || ''))).length;
     return <ScrollView contentContainerStyle={styles.screen}>
       <IconBack onPress={() => setView('form')} />
       <View style={styles.planHead}>
         <Text style={styles.planMeta}>{plan.gymName} · {plan.durationMinutes} min</Text>
-        <Text accessibilityRole="header" style={styles.planTitle}>{plan.focus}</Text>
+        <Text accessibilityRole="header" style={styles.planTitle}>{plan.focus.charAt(0).toUpperCase() + plan.focus.slice(1)}</Text>
+        {plan.typedFocus ? <Text style={styles.meant}>Showing a plan for “{plan.focus}”. You typed “{plan.typedFocus}”.</Text> : null}
       </View>
       <Animated.View style={[styles.stats, { opacity: reveal }]}>
         <Stat value={plan.exercises.length} label={plan.exercises.length === 1 ? 'exercise' : 'exercises'} />
@@ -163,6 +186,17 @@ export function WorkoutPlanner({ gyms, preferences, userId, workout, onOpen }: {
       {plan.coverage?.covered.length ? <View style={styles.areaList}>{plan.coverage.covered.map((area) => <View key={area} style={styles.areaTag}><Ionicons name="checkmark" size={14} color={colors.lime} /><Text style={styles.areaTagText}>{area}</Text></View>)}</View> : null}
       {plan.coverage?.deferred?.length ? <Text style={styles.deferred}>For a longer workout: {plan.coverage.deferred.join(' · ')}</Text> : null}
       {plan.coverage?.missing.length ? <Notice tone="danger">No matching equipment at this gym for: {plan.coverage.missing.join(', ')}.</Notice> : null}
+
+      {next ? <View style={styles.nextUp}>
+        <View style={styles.flex}>
+          <Text style={styles.nextLabel}>{done ? 'Next up' : 'Start with'}</Text>
+          <Text style={styles.nextName}>{next.name}</Text>
+          <Text style={styles.nextMeta}>{next.sets} × {next.reps}{next.targetArea ? ` · ${next.targetArea}` : ''}</Text>
+        </View>
+        <View style={styles.nextStation}><Text style={styles.stationLabel}>Station</Text><Text style={styles.nextStationCode}>{next.stationCode}</Text></View>
+      </View> : <View style={styles.nextUp}><Ionicons name="checkmark-circle" size={26} color={colors.lime} /><View style={styles.flex}><Text style={styles.nextName}>Every exercise started</Text><Text style={styles.nextMeta}>Finish your workout on Today when you’re done.</Text></View></View>}
+      <Button label={next ? `Scan station ${next.stationCode}` : 'Scan a machine'} onPress={onScan} loading={scanning} />
+      {scanMessage ? <Notice tone={/not available|canceled/i.test(scanMessage) ? 'normal' : 'danger'}>{scanMessage}</Notice> : null}
 
       <View style={styles.listHead}><Text style={styles.sectionLabel}>Exercises</Text>{workout ? <Text style={styles.progress}>{done} of {plan.exercises.length} started</Text> : null}</View>
       <View style={styles.exerciseList}>
@@ -187,6 +221,7 @@ export function WorkoutPlanner({ gyms, preferences, userId, workout, onOpen }: {
   }
 
   const custom = focus.trim().length > 0 && !FOCUS_OPTIONS.some((option) => option.label.toLowerCase() === focus.trim().toLowerCase());
+  const suggestion = typoSuggestion;
   return <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
     <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
       <View style={styles.headGroup}>
@@ -197,7 +232,7 @@ export function WorkoutPlanner({ gyms, preferences, userId, workout, onOpen }: {
       {activePlan ? <Pressable accessibilityRole="button" accessibilityLabel={`Open today's ${activePlan.focus} plan`} onPress={() => setView('plan')} style={({ pressed }) => [styles.ready, pressed && styles.pressed]}>
         <View style={styles.flex}>
           <Text style={styles.readyLabel}>Today’s plan</Text>
-          <Text style={styles.readyTitle}>{activePlan.focus}</Text>
+          <Text style={styles.readyTitle}>{activePlan.focus.charAt(0).toUpperCase() + activePlan.focus.slice(1)}</Text>
           <Text style={styles.readyMeta}>{activePlan.exercises.length} exercises · {plannedSets(activePlan)} sets · {activePlan.durationMinutes} min</Text>
         </View>
         <View style={styles.readyGo}><Ionicons name="arrow-forward" size={20} color={colors.onLime} /></View>
@@ -215,6 +250,10 @@ export function WorkoutPlanner({ gyms, preferences, userId, workout, onOpen }: {
           </Pressable>;
         })}</View>
         <Field label="Or describe it" placeholder="e.g. glutes and hamstrings" value={custom ? focus : ''} onChangeText={setFocus} maxLength={160} returnKeyType="done" />
+        {suggestion ? <Pressable accessibilityRole="button" accessibilityHint="Replaces your text with the corrected spelling" onPress={() => setFocus(suggestion)} style={({ pressed }) => [styles.suggestion, pressed && styles.pressed]}>
+          <Ionicons name="sparkles-outline" size={16} color={colors.lime} />
+          <Text style={styles.suggestionText}>Did you mean <Text style={styles.suggestionWord}>“{suggestion}”</Text>?</Text>
+        </Pressable> : null}
       </View>
 
       <View style={styles.block}>
@@ -263,6 +302,15 @@ const styles = StyleSheet.create({
   timeHint: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13, lineHeight: 19 },
   status: { color: colors.lime, fontFamily: fonts.medium, fontSize: 13, textAlign: 'center' },
   planHead: { gap: 4 },
+  nextUp: { flexDirection: 'row', alignItems: 'center', gap: 14, borderRadius: 20, padding: 18, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.lime },
+  nextLabel: { color: colors.lime, fontFamily: fonts.semibold, fontSize: 13 },
+  nextName: { color: colors.cream, fontFamily: fonts.bold, fontSize: 20, letterSpacing: -0.3, marginTop: 2 },
+  nextMeta: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13, marginTop: 3 },
+  nextStation: { alignItems: 'center', minWidth: 64, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 14, backgroundColor: colors.panelRaised },
+  nextStationCode: { color: colors.lime, fontFamily: fonts.bold, fontSize: 24 },
+  meant: { color: colors.muted, fontFamily: fonts.regular, fontSize: 14, lineHeight: 20, marginTop: 4 },
+  suggestion: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 44, marginTop: -4 },
+  suggestionText: { color: colors.muted, fontFamily: fonts.regular, fontSize: 15 }, suggestionWord: { color: colors.lime, fontFamily: fonts.semibold },
   planMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: 14 },
   planTitle: { color: colors.cream, fontFamily: fonts.bold, fontSize: 34, letterSpacing: -1, lineHeight: 38 },
   stats: { flexDirection: 'row', alignItems: 'center', borderRadius: 20, paddingVertical: 18, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },

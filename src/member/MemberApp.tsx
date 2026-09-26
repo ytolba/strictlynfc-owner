@@ -29,7 +29,7 @@ import {
 import { healthProviderName, isHealthKitSupported, readWorkoutHealthStats, requestHealthKitAccess, saveWorkoutToHealth } from './health';
 import { connectStrava, disconnectStrava, isStravaConfigured, loadStravaConnection, uploadWorkoutToStrava } from './strava';
 import { WorkoutTimerBar, useElapsed } from './WorkoutTimer';
-import { WorkoutPlanner } from './WorkoutPlanner';
+import { WorkoutPlanner, loadDailyPlan, nextPlannedExercise, type DailyPlan } from './WorkoutPlanner';
 import { QrScanner } from './QrScanner';
 import type { EquipmentSummary, MachineHistoryItem, MemberMachine, MemberPreferences, PartnerGym, WorkoutSession, WorkoutSet } from './types';
 import { VAULT_EQUIPMENT, VAULT_GYM } from './vaultCatalog';
@@ -39,8 +39,9 @@ type MachineLink = { publicId: string; exerciseSlug?: string; openedAt?: number 
 
 export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Session | null; initialLink?: MachineLink | null; onSwitchOwner: () => void }) {
   const [tab, setTab] = useState<MemberTab>('today');
-  const [machineLink, setMachineLink] = useState<MachineLink | null>(initialLink || null);
+  const [machineLink, setMachineLink] = useState<MachineLink | null>(null);
   const [qrOpen, setQrOpen] = useState(false);
+  const [todayPlan, setTodayPlan] = useState<DailyPlan | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanMessage, setScanMessage] = useState('');
   const [activeWorkout, setActiveWorkout] = useState<WorkoutSession | null>(null);
@@ -77,10 +78,54 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
   // Guests need a Supabase session (anonymous sign-in) for cloud workout history and Strava.
   useEffect(() => { if (!session) ensureMemberSession().catch(() => undefined); }, [session?.user.id]);
   // Re-run on every tap (openedAt changes), not only when the station changes.
-  useEffect(() => { if (initialLink) setMachineLink(initialLink); }, [initialLink?.publicId, initialLink?.exerciseSlug, initialLink?.openedAt]);
 
   const refresh = async () => { setRefreshing(true); await reload(); setRefreshing(false); };
   const openMachine = (publicId: string, exerciseSlug?: string) => { setScanMessage(''); setMachineLink({ publicId, exerciseSlug }); };
+
+  // Today's plan is known before the Plan tab is ever opened, so the first scan of the day can be checked against it.
+  const planUserId = session?.user.id || null;
+  const planGymId = (gyms.find((gym) => preferences.favoriteGymIds.includes(gym.id)) || gyms[0])?.id || '';
+  useEffect(() => {
+    let current = true;
+    if (planUserId && planGymId) void loadDailyPlan(planUserId, planGymId).then((plan) => { if (current) setTodayPlan(plan); });
+    return () => { current = false; };
+  }, [planUserId, planGymId]);
+
+  // A sticker tapped from the lock screen or another app arrives as a link. Read today's plan first,
+  // because on a cold start it may not have loaded yet.
+  useEffect(() => {
+    if (!initialLink) return;
+    void (async () => {
+      const plan = planUserId && planGymId ? await loadDailyPlan(planUserId, planGymId) : null;
+      await openScanned(initialLink, plan);
+    })();
+  }, [initialLink?.publicId, initialLink?.exerciseSlug, initialLink?.openedAt]);
+
+  // Every scan (NFC, QR, sticker link, or "Scan next machine") goes through here. With no plan it simply opens the machine.
+  // With a plan, a machine that isn't in it gets a heads-up, never a block: the planned machine may be taken.
+  const openScanned = async (link: { publicId: string; exerciseSlug?: string }, knownPlan: DailyPlan | null = todayPlan) => {
+    const plan = knownPlan && Date.parse(knownPlan.validUntil) > Date.now() ? knownPlan : null;
+    if (!plan) return openMachine(link.publicId, link.exerciseSlug);
+    const atStation = plan.exercises.filter((item) => item.publicId === link.publicId);
+    if (atStation.length) {
+      // Skipping ahead to another planned machine is normal. A rack with several planned movements opens the next unlogged one.
+      const unlogged = atStation.find((item) => !activeWorkout?.sets.some((set) => set.publicId === item.publicId && (set.exerciseSlug || '') === (item.exerciseSlug || '')));
+      return openMachine(link.publicId, link.exerciseSlug || (unlogged || atStation[0])?.exerciseSlug || undefined);
+    }
+    const next = nextPlannedExercise(plan, activeWorkout);
+    const found = await locateStation(link.publicId, gyms, plan.gymId);
+    const otherGym = found && found.gym.id !== plan.gymId ? found.gym : null;
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => undefined);
+    Alert.alert(
+      found ? `This is ${found.item.name} (Station ${found.item.stationCode})` : 'This machine isn’t in today’s plan',
+      otherGym ? `It’s at ${otherGym.name}. Today’s plan is for ${plan.gymName}.`
+        : next ? `Your next exercise is ${next.name} at Station ${next.stationCode}.` : `It isn’t part of today’s ${plan.focus} plan.`,
+      [
+        { text: 'Back to plan', style: 'cancel', onPress: () => { setMachineLink(null); setTab('plan'); } },
+        { text: 'Log here anyway', onPress: () => openMachine(link.publicId, link.exerciseSlug) }
+      ]
+    );
+  };
   // Scan opens the system NFC sheet directly. Anything that stops it (no NFC, cancelled, unknown tag)
   // lands back on Today, where the station-code field is always visible.
   const startScan = async () => {
@@ -89,9 +134,10 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
       const link = machineLinkFromUrl(await scanUrlFromTag());
       if (!link) throw new Error('That tag is not linked to a StrictlyVision station.');
       void Haptics.selectionAsync().catch(() => undefined);
-      openMachine(link.publicId);
+      await openScanned(link);
     } catch (reason) {
-      setMachineLink(null); setTab('today');
+      // A failed scan stays on the Plan tab when started there; everywhere else it lands on Today.
+      setMachineLink(null); if (tab !== 'plan') setTab('today');
       // Phones without NFC go straight to the QR code on the machine.
       if (nfcUnsupported(reason)) setQrOpen(true); else setScanMessage(nfcError(reason));
     }
@@ -167,7 +213,7 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
   const screen = tab === 'today'
     ? <TodayScreen workout={activeWorkout} finished={finished} recent={recent} onOpen={openMachine} onScan={startScan} onScanQr={() => setQrOpen(true)} scanning={scanning} scanMessage={scanMessage} onFinish={finishWorkout} refreshing={refreshing} onRefresh={refresh} />
     : tab === 'plan'
-      ? <WorkoutPlanner gyms={gyms} preferences={preferences} userId={session?.user.id || null} workout={activeWorkout} onOpen={openMachine} />
+      ? <WorkoutPlanner gyms={gyms} preferences={preferences} userId={session?.user.id || null} workout={activeWorkout} onOpen={openMachine} onPlanChange={setTodayPlan} onScan={startScan} scanning={scanning} scanMessage={scanMessage} />
       : tab === 'gyms'
       ? <GymsScreen gyms={gyms} preferences={preferences} onPreferences={async (next) => { setPreferences(next); await savePreferences(next); }} onOpen={openMachine} />
       : <ProfileScreen session={session} preferences={preferences} onPreferences={async (next) => { setPreferences(next); await savePreferences(next); }} onSwitchOwner={onSwitchOwner} />;
@@ -177,7 +223,7 @@ export function MemberApp({ session, initialLink, onSwitchOwner }: { session: Se
       {activeWorkout && tab !== 'today' ? <View style={styles.timerDock}><WorkoutTimerBar startedAt={activeWorkout.startedAt} gymName={activeWorkout.gymName} setCount={activeWorkout.sets.length} onPress={() => setTab('today')} /></View> : null}
       <View style={styles.app}>{screen}</View>
       <MemberTabBar tab={tab} setTab={setTab} />
-      <QrScanner visible={qrOpen} onClose={() => setQrOpen(false)} onScanned={(link) => { setQrOpen(false); openMachine(link.publicId, link.exerciseSlug); }} codeEntry={<StationCodeEntry onSubmit={async (code) => { const problem = await openStationCode(code); if (!problem) setQrOpen(false); return problem; }} />} />
+      <QrScanner visible={qrOpen} onClose={() => setQrOpen(false)} onScanned={(link) => { setQrOpen(false); void openScanned(link); }} codeEntry={<StationCodeEntry onSubmit={async (code) => { const problem = await openStationCode(code); if (!problem) setQrOpen(false); return problem; }} />} />
     </SafeAreaView>
   );
 }
@@ -239,6 +285,16 @@ function TodayScreen({ workout, finished, recent, onOpen, onScan, onScanQr, scan
 async function equipmentForGym(gym: PartnerGym) {
   try { return await loadGymEquipment(gym.id); }
   catch { return gym.id === VAULT_GYM.id ? VAULT_EQUIPMENT : []; }
+}
+
+// Finds which gym a scanned station belongs to, checking the plan's gym first.
+async function locateStation(publicId: string, gyms: PartnerGym[], firstGymId: string) {
+  const ordered = [...gyms].sort((a, b) => Number(b.id === firstGymId) - Number(a.id === firstGymId));
+  for (const gym of ordered) {
+    const item = (await equipmentForGym(gym)).find((equipment) => equipment.publicId === publicId);
+    if (item) return { item, gym };
+  }
+  return null;
 }
 
 // Preferred gyms first, so a station code shared by two gyms opens the member's own gym.

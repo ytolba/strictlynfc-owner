@@ -192,3 +192,63 @@ Deno.test('medical requests stop before storage or the third-party model', async
       throw new Error('Medical text was sent onward.');
   } finally { globalThis.fetch = originalFetch; }
 });
+
+const gluteCatalog = [
+  ...catalog,
+  { publicId: 'hip-thrust', stationName: 'Hip Thrust Machine', stationCode: '30', category: 'Lower Body', exerciseSlug: null, exerciseName: 'Hip Thrust Machine', primaryMuscles: ['Glutes'] },
+  { publicId: 'smith', stationName: 'Smith Machine', stationCode: '31', category: 'Lower Body', exerciseSlug: 'smith-hip-thrust', exerciseName: 'Smith Machine Hip Thrust', primaryMuscles: ['Glutes'] },
+  { publicId: 'hip-abduction', stationName: 'Hip Abduction', stationCode: '32', category: 'Lower Body', exerciseSlug: null, exerciseName: 'Hip Abduction', primaryMuscles: ['Glutes'] },
+  { publicId: 'leg-press', stationName: 'Leg Press', stationCode: '14', category: 'Lower Body', exerciseSlug: null, exerciseName: '45-Degree Leg Press', primaryMuscles: ['Quads', 'Glutes'] },
+  { publicId: 'leg-extension', stationName: 'Leg Extension', stationCode: '15', category: 'Lower Body', exerciseSlug: null, exerciseName: 'Leg Extension', primaryMuscles: ['Quads'] },
+  { publicId: 'platform', stationName: 'Deadlift Platform', stationCode: '33', category: 'Posterior Chain', exerciseSlug: 'romanian-deadlift', exerciseName: 'Romanian Deadlift', primaryMuscles: ['Hamstrings', 'Glutes'] },
+  { publicId: 'platform', stationName: 'Deadlift Platform', stationCode: '33', category: 'Posterior Chain', exerciseSlug: 'barbell-deadlift', exerciseName: 'Barbell Deadlift', primaryMuscles: ['Glutes', 'Hamstrings'] },
+  { publicId: 'split-squat', stationName: 'Split Squat Bench', stationCode: '34', category: 'Lower Body', exerciseSlug: null, exerciseName: 'Bulgarian Split Squat', primaryMuscles: ['Quads', 'Glutes'] },
+  { publicId: 'bulgarian-bag', stationName: 'Bulgarian Bag', stationCode: '35', category: 'Functional', exerciseSlug: null, exerciseName: 'Bulgarian Bag', primaryMuscles: ['Glutes', 'Shoulders'] },
+  { publicId: 'calf-raise', stationName: 'Calf Raise', stationCode: '37', category: 'Lower Body', exerciseSlug: null, exerciseName: 'Standing Calf Raise', primaryMuscles: ['Calves'] }
+];
+
+Deno.test('a glutes request only plans glute exercises, starting with glute-first machines', async () => {
+  const urls: string[] = []; mockFetch('reserved', urls, gluteCatalog);
+  try {
+    const response = await handleRequest(request('glutes', 'generate', 45));
+    const data = await response.json();
+    if (response.status !== 200) throw new Error(JSON.stringify(data));
+    const names = data.plan.exercises.map((item: PlannedItem) => item.name) as string[];
+    for (const offTarget of ['Leg Extension', 'Leg Curl', 'Standing Calf Raise', '45-Degree Leg Press', 'Back Squat', 'Bulgarian Bag'])
+      if (names.includes(offTarget)) throw new Error(`Glute plan included ${offTarget}: ${names.join(', ')}`);
+    if (!/hip thrust/i.test(names[0] || '')) throw new Error(`Glute plan should open with a hip thrust: ${names.join(', ')}`);
+    if (!names.includes('Hip Abduction') || !names.includes('Smith Machine Hip Thrust')) throw new Error(`Glute machines were skipped: ${names.join(', ')}`);
+    if (names.length < 5) throw new Error(`Glute plan did not use the time available: ${names.join(', ')}`);
+    if (data.plan.coverage.covered.some((area: string) => !area.startsWith('Glutes'))) throw new Error(`Non-glute areas: ${data.plan.coverage.covered}`);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+Deno.test('misspelled focus is corrected and the typed text is returned for "you meant"', async () => {
+  const urls: string[] = []; mockFetch('reserved', urls, gluteCatalog);
+  try {
+    const response = await handleRequest(request('glutse and hamstirngs', 'generate', 45));
+    const data = await response.json();
+    if (response.status !== 200) throw new Error(JSON.stringify(data));
+    if (data.plan.focus !== 'glutes and hamstrings' || data.plan.typedFocus !== 'glutse and hamstirngs') throw new Error(`Spelling not handled: ${data.plan.focus} / ${data.plan.typedFocus}`);
+    const names = data.plan.exercises.map((item: PlannedItem) => item.name) as string[];
+    if (!names.includes('Leg Curl') || !names.some((name) => /hip thrust/i.test(name))) throw new Error(`Both muscles were not trained: ${names.join(', ')}`);
+    if (names.includes('Leg Extension') || names.includes('Standing Calf Raise')) throw new Error(`Off-target exercise: ${names.join(', ')}`);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+Deno.test('a correctly spelled focus carries no typedFocus', async () => {
+  const urls: string[] = []; mockFetch('reserved', urls, gluteCatalog);
+  try {
+    const data = await (await handleRequest(request('glutes', 'generate', 30))).json();
+    if ('typedFocus' in data.plan) throw new Error('typedFocus should only appear after a correction.');
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+Deno.test('legs still covers quads, hamstrings, glutes and calves', async () => {
+  const urls: string[] = []; mockFetch('reserved', urls, gluteCatalog);
+  try {
+    const data = await (await handleRequest(request('legs', 'generate', 45))).json();
+    for (const label of ['Quads', 'Hamstrings', 'Glutes', 'Calves'])
+      if (!data.plan.coverage.covered.includes(label)) throw new Error(`Leg day lost ${label}: ${data.plan.coverage.covered}`);
+  } finally { globalThis.fetch = originalFetch; }
+});

@@ -1,4 +1,5 @@
 // Jev classifies the requested focus; only the selected gym's real exercises may enter a plan.
+import { correctFocus } from './focusSpelling.ts';
 const SITE = 'https://strictlyinc.com';
 const DURATION_OPTIONS = [20, 30, 45, 60, 75, 90] as const;
 const SESSION_BUDGETS: Record<number, { exercises: number; workingSets: number }> = {
@@ -9,8 +10,10 @@ const SESSION_BUDGETS: Record<number, { exercises: number; workingSets: number }
 const INTENTS = ['full_body', 'chest', 'back', 'shoulders', 'legs', 'arms', 'push', 'pull', 'upper', 'lower', 'custom'] as const;
 type Intent = typeof INTENTS[number];
 type Candidate = { publicId: string; stationName: string; stationCode: string; category: string; exerciseSlug: string | null; exerciseName: string; primaryMuscles: string[]; group: string };
-type MuscleGroup = 'chest' | 'back' | 'shoulders' | 'legs' | 'arms' | 'core';
-type Area = { key: string; label: string; matches: (item: Candidate) => boolean };
+type MuscleGroup = 'chest' | 'back' | 'shoulders' | 'legs' | 'arms' | 'core' | 'quads' | 'hamstrings' | 'glutes' | 'calves' | 'biceps' | 'triceps';
+// Naming one of these means "train this muscle", not its whole region: glutes must not become a leg day.
+const SINGLE_MUSCLES: MuscleGroup[] = ['quads', 'hamstrings', 'glutes', 'calves', 'biceps', 'triceps', 'core'];
+type Area = { key: string; label: string; matches: (item: Candidate) => boolean; rank?: (item: Candidate) => number };
 type Reservation = { state: string; id?: string; token?: string; gymName?: string; validUntil?: string; plan?: unknown; catalog?: unknown; retryAfterSeconds?: number };
 class PlannerError extends Error { constructor(message: string, readonly status: number) { super(message); } }
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, apikey, content-type', 'Access-Control-Allow-Methods': 'POST, OPTIONS' };
@@ -44,6 +47,9 @@ function groupFor(name: string, category: string, muscles: string[]) {
   return '';
 }
 const nameHas = (item: Candidate, pattern: RegExp) => pattern.test(item.exerciseName);
+// Where the muscle sits in the station's primary list: 0 when it is the main mover, larger when it only assists.
+const musclePosition = (item: Candidate, pattern: RegExp) => { const index = item.primaryMuscles.findIndex((muscle) => pattern.test(muscle)); return index < 0 ? 9 : index; };
+const worksMuscle = (item: Candidate, pattern: RegExp) => musclePosition(item, pattern) < 9;
 const inGroup = (group: string): Area => ({ key: group, label: group[0].toUpperCase() + group.slice(1), matches: (item) => item.group === group });
 const groupAreas: Record<MuscleGroup, Area[]> = {
   // These are movement angles / major regions, not a claim that each anatomical fiber can be isolated.
@@ -69,7 +75,25 @@ const groupAreas: Record<MuscleGroup, Area[]> = {
     { key: 'calves', label: 'Calves', matches: (item) => item.group === 'calves' }
   ],
   arms: [inGroup('biceps'), inGroup('triceps')],
-  core: [inGroup('core')]
+  core: [inGroup('core')],
+  glutes: [
+    { key: 'glute-thrust', label: 'Glutes · hip thrust', matches: (item) => nameHas(item, /hip thrust|glute bridge/i) },
+    { key: 'glute-abduction', label: 'Glutes · abduction', matches: (item) => nameHas(item, /abduction|abductor|kickback/i) },
+    { key: 'glute-hinge', label: 'Glutes · hinge', matches: (item) => worksMuscle(item, /glute/i) && nameHas(item, /deadlift|romanian|\brdl\b|back extension|good morning/i) && !nameHas(item, /rack pull/i), rank: (item) => musclePosition(item, /glute/i) },
+    { key: 'glute-single-leg', label: 'Glutes · single leg', matches: (item) => worksMuscle(item, /glute/i) && nameHas(item, /split squat|lunge|step-?up/i) }
+  ],
+  quads: [
+    { key: 'quad-press', label: 'Quads · squat or press', matches: (item) => item.group === 'quads' && nameHas(item, /squat|leg press|hack/i) && !nameHas(item, /split squat/i) },
+    { key: 'quad-extension', label: 'Quads · extension', matches: (item) => nameHas(item, /leg extension/i) },
+    { key: 'quad-single-leg', label: 'Quads · single leg', matches: (item) => nameHas(item, /split squat|lunge|step-?up/i) }
+  ],
+  hamstrings: [
+    { key: 'hamstring-curl', label: 'Hamstrings · curl', matches: (item) => nameHas(item, /leg curl|hamstring curl/i) },
+    { key: 'hamstring-hinge', label: 'Hamstrings · hinge', matches: (item) => worksMuscle(item, /hamstring/i) && nameHas(item, /romanian|\brdl\b|good morning|back extension|deadlift/i), rank: (item) => musclePosition(item, /hamstring/i) }
+  ],
+  calves: [inGroup('calves')],
+  biceps: [inGroup('biceps')],
+  triceps: [inGroup('triceps')]
 };
 const majorAreas: Area[] = [
   inGroup('quads'),
@@ -82,9 +106,11 @@ const majorAreas: Area[] = [
   inGroup('calves'), inGroup('biceps'), inGroup('triceps')];
 function explicitGroups(focus: string): MuscleGroup[] {
   const checks: [MuscleGroup, RegExp][] = [
-    ['chest', /\b(chest|pecs?|pectorals?)\b/i], ['back', /\b(back|lats?|traps?|rhomboids?)\b/i],
-    ['shoulders', /\b(shoulders?|delts?|deltoids?)\b/i], ['legs', /\b(legs?|quads?|hamstrings?|glutes?|calves|calf)\b/i],
-    ['arms', /\b(arms?|biceps?|triceps?)\b/i], ['core', /\b(core|abs?|abdominals?)\b/i]
+    ['chest', /\b(chest|pecs?|pectorals?)\b/i], ['back', /\b(?<!lower )(back|lats?|traps?|rhomboids?)\b/i],
+    ['shoulders', /\b(shoulders?|delts?|deltoids?)\b/i], ['legs', /\b(legs?)\b/i],
+    ['quads', /\b(quads?|quadriceps)\b/i], ['hamstrings', /\b(hamstrings?|hammies)\b/i], ['glutes', /\b(glutes?|butt|booty|bum)\b/i],
+    ['calves', /\b(calves|calf|calfs)\b/i], ['arms', /\b(arms?)\b/i], ['biceps', /\b(biceps?|bis)\b/i], ['triceps', /\b(triceps?|tris)\b/i],
+    ['core', /\b(core|abs?|abdominals?|obliques)\b/i]
   ];
   return checks.map(([group, pattern]) => ({ group, position: focus.search(pattern) }))
     .filter((match) => match.position >= 0).sort((a, b) => a.position - b.position).map((match) => match.group);
@@ -94,6 +120,12 @@ function interleave(...lists: Area[][]): Area[] {
   for (let index = 0; index < Math.max(...lists.map((list) => list.length)); index++)
     for (const list of lists) if (list[index]) ordered.push(list[index]);
   return ordered;
+}
+// True when every muscle the member named is a single muscle, so the plan should go deeper on it
+// (more exercises for the same muscle) instead of spreading out to neighbouring muscles.
+function singleMuscleFocus(focus: string) {
+  const groups = explicitGroups(focus);
+  return groups.length > 0 && groups.every((group) => SINGLE_MUSCLES.includes(group)) && !/\b(full[ -]?body|whole body)\b/i.test(focus);
 }
 function areasFor(focus: string, intent: Intent): Area[] {
   if (/\b(full[ -]?body|whole body|all muscles?)\b/i.test(focus)) return majorAreas;
@@ -106,19 +138,31 @@ function areasFor(focus: string, intent: Intent): Area[] {
   if (intent === 'lower') return [...groupAreas.legs, inGroup('core')];
   return groupAreas[intent as MuscleGroup] || majorAreas;
 }
-function selectExercises(areas: Area[], candidates: Candidate[], limit: number, duration: number) {
+function selectExercises(areas: Area[], candidates: Candidate[], limit: number, duration: number, fill = false) {
   const used = new Set<string>(), usedStations = new Set<string>();
   const selected: { item: Candidate; area: Area }[] = [], missing: string[] = [], deferred: string[] = [];
+  const pick = (area: Area) => candidates.filter((item) => area.matches(item) && !used.has(`${item.publicId}:${item.exerciseSlug || ''}`))
+    .sort((a, b) => {
+      const setupCost = (item: Candidate) => duration <= 30 && /barbell|power rack|squat rack|deadlift|good morning/i.test(`${item.stationName} ${item.exerciseName}`) ? 1 : 0;
+      return (area.rank?.(a) ?? 0) - (area.rank?.(b) ?? 0) || setupCost(a) - setupCost(b)
+        || Number(usedStations.has(a.publicId)) - Number(usedStations.has(b.publicId)) || a.exerciseName.localeCompare(b.exerciseName);
+    })[0];
+  const take = (item: Candidate, area: Area) => { selected.push({ item, area }); used.add(`${item.publicId}:${item.exerciseSlug || ''}`); usedStations.add(item.publicId); };
   for (const area of areas) {
     if (selected.length >= limit) { deferred.push(area.label); continue; }
-    const choice = candidates.filter((item) => area.matches(item) && !used.has(`${item.publicId}:${item.exerciseSlug || ''}`))
-      .sort((a, b) => {
-        const setupCost = (item: Candidate) => duration <= 30 && /barbell|power rack|squat rack|deadlift|good morning/i.test(`${item.stationName} ${item.exerciseName}`) ? 1 : 0;
-        return setupCost(a) - setupCost(b) || Number(usedStations.has(a.publicId)) - Number(usedStations.has(b.publicId))
-          || a.exerciseName.localeCompare(b.exerciseName);
-      })[0];
+    const choice = pick(area);
     if (!choice) { missing.push(area.label); continue; }
-    selected.push({ item: choice, area }); used.add(`${choice.publicId}:${choice.exerciseSlug || ''}`); usedStations.add(choice.publicId);
+    take(choice, area);
+  }
+  // Single-muscle plans keep adding exercises for that same muscle until the time budget is used,
+  // rather than borrowing exercises for other muscles.
+  for (let added = fill; added && selected.length < limit;) {
+    added = false;
+    for (const area of areas) {
+      if (selected.length >= limit) break;
+      const choice = pick(area);
+      if (choice) { take(choice, area); added = true; }
+    }
   }
   return { selected, missing, deferred };
 }
@@ -195,7 +239,7 @@ async function classifyFocus(focus: string, apiKey: string): Promise<Intent> {
   return INTENTS.includes(intent) ? intent : 'custom';
 }
 async function requestHash(gymId: string, focus: string, duration: number) {
-  const bytes = new TextEncoder().encode(`coverage-v4|${gymId}|${focus.toLowerCase().replace(/\s+/g, ' ')}|${duration}`);
+  const bytes = new TextEncoder().encode(`coverage-v5|${gymId}|${focus.toLowerCase().replace(/\s+/g, ' ')}|${duration}`);
   return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 export async function handleRequest(req: Request): Promise<Response> {
@@ -219,9 +263,10 @@ export async function handleRequest(req: Request): Promise<Response> {
     catch (error) { console.error('Planner today failed', error); return json({ error: 'Could not load today’s plan.' }, 502); }
   }
   if (body.action && body.action !== 'generate') return json({ error: 'Unknown action.' }, 400);
-  const focus = String(body.focus || '').trim().slice(0, 160), duration = Number(body.durationMinutes);
-  if (focus.length < 2 || !DURATION_OPTIONS.includes(duration as typeof DURATION_OPTIONS[number])) return json({ error: 'Choose a training focus and an available time.' }, 400);
-  if (/pain|injur|rehab|pregnan|surgery|medical|arthritis|disabilit|concussion/i.test(focus))
+  const typedFocus = String(body.focus || '').trim().slice(0, 160), duration = Number(body.durationMinutes);
+  if (typedFocus.length < 2 || !DURATION_OPTIONS.includes(duration as typeof DURATION_OPTIONS[number])) return json({ error: 'Choose a training focus and an available time.' }, 400);
+  const spelling = correctFocus(typedFocus), focus = spelling.text;
+  if (/pain|injur|rehab|pregnan|surgery|medical|arthritis|disabilit|concussion/i.test(`${typedFocus} ${focus}`))
     return json({ error: 'This planner does not tailor workouts for medical conditions or injuries. Please check with a qualified professional.' }, 422);
   const apiKey = Deno.env.get('TYPESAFE_API_KEY');
   if (!apiKey) return json({ error: 'Workout planning is not configured yet.' }, 503);
@@ -238,12 +283,13 @@ export async function handleRequest(req: Request): Promise<Response> {
     if (!candidates.length) throw new PlannerError('This gym has no strength exercises ready for planning.', 422);
     const intent = await classifyFocus(focus, apiKey);
     const areas = areasFor(focus, intent);
-    const { selected, missing, deferred } = selectExercises(areas, candidates, SESSION_BUDGETS[duration].exercises, duration);
+    const { selected, missing, deferred } = selectExercises(areas, candidates, SESSION_BUDGETS[duration].exercises, duration, singleMuscleFocus(focus));
     if (selected.length < 1) throw new PlannerError('There are no matching stations at this gym for that focus.', 422);
     const sets = workingSets(selected.length, duration);
     const pacing = pacingFor(duration, sets, selected.length);
     const plan = { gymId, gymName: reservation.gymName, createdAt: new Date().toISOString(), validUntil: reservation.validUntil,
-      focus, intent, durationMinutes: duration, pacing, coverage: { covered: selected.map(({ area }) => area.label), deferred, missing }, exercises: selected.map(({ item, area }, index) => ({
+      focus, ...(spelling.corrections.length ? { typedFocus } : {}), intent, durationMinutes: duration, pacing,
+      coverage: { covered: [...new Set(selected.map(({ area }) => area.label))], deferred, missing }, exercises: selected.map(({ item, area }, index) => ({
         publicId: item.publicId, exerciseSlug: item.exerciseSlug, name: item.exerciseName, stationName: item.stationName,
         stationCode: item.stationCode, primaryMuscles: item.primaryMuscles, targetArea: area.label, sets: sets[index], reps: item.group === 'core' ? '10–15' : '8–12'
       })) };
