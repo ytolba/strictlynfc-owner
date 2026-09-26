@@ -15,7 +15,7 @@ import { AppTabBar, BrandMark, EmptyRow, IconBack, PageHeader, SettingRow, Socia
 import { colors, fonts } from '../theme';
 import { useReduceMotion } from '../motion';
 import { supabase } from '../supabase';
-import { scanUrlFromTag } from '../nfc';
+import { isNfcUnavailable, scanUrlFromTag } from '../nfc';
 import { deleteMemberAccount, exportMemberData, loadGymEquipment, loadHistory, loadPartnerGyms, machineLinkFromUrl, recordSet, recordTap, resolveMachine } from './api';
 import { saveWorkoutToCloud, workoutMinutes } from './workouts';
 import { ensureMemberSession } from './session';
@@ -688,7 +688,7 @@ function healthSummary(health?: WorkoutSession['health']) {
   return parts.length ? `♥ ${parts.join(' · ')}` : '';
 }
 function gymIdFor(gymName: string) { return gymName === VAULT_GYM.name ? VAULT_GYM.id : gymName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'strictly-demo-gym'; }
-function nfcUnsupported(reason: unknown) { return reason instanceof Error && /support/i.test(reason.message); }
+function nfcUnsupported(reason: unknown) { return isNfcUnavailable(reason); }
 function nfcError(reason: unknown) { const message = reason instanceof Error ? reason.message : 'The scan did not finish.'; if (/cancel|invalidate/i.test(message)) return 'Scan canceled. Tap Scan to try again, or scan the QR code on the machine.'; if (/support/i.test(message)) return 'NFC is not available on this device. Enter the station code instead.'; return message; }
 
 const styles = StyleSheet.create({

@@ -3,13 +3,19 @@ import NfcManager, { Ndef, NfcTech } from 'react-native-nfc-manager';
 
 let started = false;
 
+// Thrown only when the device has no NFC reader at all. Anything else (a cancelled sheet, a bad read)
+// is a normal NFC error, so the member stays on NFC instead of being moved to the QR scanner.
+export class NfcUnavailableError extends Error { name = 'NfcUnavailableError'; }
+export const isNfcUnavailable = (reason: unknown) => reason instanceof Error && reason.name === 'NfcUnavailableError';
+
 export async function ensureNfc() {
-  if (!started) {
-    await NfcManager.start();
-    started = true;
-  }
-  const supported = await NfcManager.isSupported();
-  if (!supported) throw new Error('This phone does not support NFC tag writing.');
+  // If the reader can't even start or report support, there is no usable NFC on this device.
+  let supported = false;
+  try {
+    if (!started) { await NfcManager.start(); started = true; }
+    supported = await NfcManager.isSupported();
+  } catch { supported = false; }
+  if (!supported) throw new NfcUnavailableError('This device does not have NFC.');
   if (Platform.OS === 'android' && !(await NfcManager.isEnabled())) throw new Error('Turn on NFC in Android settings, then try again.');
 }
 
