@@ -59,6 +59,7 @@ export type WorkoutSet = {
   machineName: string;
   exerciseSlug?: string | null;
   exerciseName?: string | null;
+  primaryMuscles?: string[];
   gymName: string;
   weight: number;
   reps: number;

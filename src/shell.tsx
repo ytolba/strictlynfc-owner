@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as AppleAuthentication from 'expo-apple-authentication';
+import Svg, { Circle, Path } from 'react-native-svg';
 import { isAppleSignInAvailable, isCanceled, loadEnabledProviders, signInWithApple, signInWithGoogle, type AuthProviders } from './auth';
 import { colors, fonts } from './theme';
 
@@ -16,7 +17,8 @@ export function PageHeader({ title, action }: { title: string; action?: ReactNod
 }
 
 export function BrandMark() {
-  return <View style={styles.brandMark}><Ionicons name="pulse" size={22} color={colors.lime} /></View>;
+  // Same geometry as assets/strictlyvision-mark-transparent.svg, the app icon's V and lime dot.
+  return <View style={styles.brandMark} accessibilityLabel="StrictlyVision" accessibilityRole="image"><Svg width={26} height={26} viewBox="0 0 128 128"><Path d="M26 30 64 98 102 30" fill="none" stroke={colors.text} strokeWidth={12} strokeLinecap="round" strokeLinejoin="round" /><Circle cx={64} cy={30} r={8} fill={colors.lime} /></Svg></View>;
 }
 
 export function IconBack({ onPress }: { onPress: () => void }) {

@@ -85,8 +85,22 @@ export async function loadHistory(publicId: string, sessionId: string, session: 
   const query = new URLSearchParams({ tagId: publicId, sessionId });
   if (exerciseSlug) query.set('exercise', exerciseSlug);
   const response = await fetch(`${API_URL}/api/nfc/history?${query}`, { headers: memberHeaders(session, false) });
-  const result = await parsed<{ history: MachineHistoryItem[] }>(response);
-  return result.history;
+  const result = await parsed<{ history: RawHistoryItem[] }>(response);
+  return result.history.map(normalizeHistoryItem);
+}
+
+// The history RPCs return camelCase (weight, seatSetting, createdAt); older responses used the table's snake_case columns.
+type RawHistoryItem = Partial<MachineHistoryItem> & { weight?: number; seatSetting?: string | null; createdAt?: string; clientLogId?: string | null };
+function normalizeHistoryItem(item: RawHistoryItem): MachineHistoryItem {
+  return {
+    id: item.id,
+    client_log_id: item.client_log_id ?? item.clientLogId ?? null,
+    weight_lb: Number(item.weight_lb ?? item.weight ?? 0),
+    reps: Number(item.reps ?? 0),
+    seat_setting: item.seat_setting ?? item.seatSetting ?? null,
+    notes: item.notes ?? null,
+    occurred_at: item.occurred_at ?? item.createdAt ?? ''
+  };
 }
 
 // Equipment comes from the server for every gym, so new gyms and stations need no app update.

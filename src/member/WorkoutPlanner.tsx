@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Animated, Easing, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { Button, Chip, Field, Notice, SectionTitle } from '../ui';
-import { IconBack, PageHeader } from '../shell';
+import { Button, Chip, Field, Notice } from '../ui';
+import { BrandMark, IconBack, PageHeader } from '../shell';
 import { colors, fonts } from '../theme';
 import { useReduceMotion } from '../motion';
 import { supabase } from '../supabase';
@@ -24,7 +23,12 @@ export type DailyPlan = {
 };
 const PLAN_PREFIX = 'strictlyvision.member.daily-plan.v2.';
 const TIME_OPTIONS = [20, 30, 45, 60, 75, 90];
-const FOCUS_SUGGESTIONS = ['Shoulders and back', 'Chest and triceps', 'Legs', 'Full body'];
+const FOCUS_OPTIONS: { label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { label: 'Shoulders and back', icon: 'accessibility-outline' },
+  { label: 'Chest and triceps', icon: 'barbell-outline' },
+  { label: 'Legs', icon: 'walk-outline' },
+  { label: 'Full body', icon: 'body-outline' }
+];
 const planKey = (userId: string, gymId: string) => `${PLAN_PREFIX}${userId}.${gymId}`;
 
 function isPlan(value: unknown): value is DailyPlan {
@@ -49,9 +53,9 @@ export async function clearDailyPlan() {
   if (keys.length) await AsyncStorage.multiRemove(keys);
 }
 
-export function WorkoutPlanner({ gyms, preferences, userId, workout, onBack, onOpen }: {
+export function WorkoutPlanner({ gyms, preferences, userId, workout, onOpen }: {
   gyms: PartnerGym[]; preferences: MemberPreferences; userId: string | null; workout: WorkoutSession | null;
-  onBack: () => void; onOpen: (publicId: string, exerciseSlug?: string) => void;
+  onOpen: (publicId: string, exerciseSlug?: string) => void;
 }) {
   const preferred = gyms.find((gym) => preferences.favoriteGymIds.includes(gym.id)) || gyms[0];
   const [gymId, setGymId] = useState(preferred?.id || '');
@@ -60,6 +64,9 @@ export function WorkoutPlanner({ gyms, preferences, userId, workout, onBack, onO
   const [plan, setPlan] = useState<DailyPlan | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  // The finished plan is its own page. It opens straight away when today's plan already exists, and after building a new one.
+  const [view, setView] = useState<'form' | 'plan'>('form');
+  const autoOpened = useRef(false);
   const reducedMotion = useReduceMotion();
   const reveal = useRef(new Animated.Value(1)).current;
 
@@ -78,7 +85,7 @@ export function WorkoutPlanner({ gyms, preferences, userId, workout, onBack, onO
       const cached = await loadDailyPlan(userId, gymId);
       if (current) {
         setPlan(cached);
-        if (cached) { setFocus((value) => value || cached.focus); setDuration(cached.durationMinutes); }
+        if (cached) { setFocus((value) => value || cached.focus); setDuration(cached.durationMinutes); openExisting(); }
       }
       try {
         const { data, error } = await supabase.functions.invoke('generate-workout', { body: { action: 'today', gymId } });
@@ -87,12 +94,17 @@ export function WorkoutPlanner({ gyms, preferences, userId, workout, onBack, onO
         if (today) await AsyncStorage.setItem(planKey(userId, gymId), JSON.stringify(today));
         if (current) {
           setPlan(today);
-          if (today) { setFocus((value) => value || today.focus); setDuration(today.durationMinutes); }
+          if (today) { setFocus((value) => value || today.focus); setDuration(today.durationMinutes); openExisting(); }
         }
       } catch { /* Keep the cached plan while offline. */ }
     })();
     return () => { current = false; };
   }, [userId, gymId]);
+
+  function openExisting() {
+    if (autoOpened.current) return;
+    autoOpened.current = true; setView('plan');
+  }
 
   const generate = async () => {
     if (!gymId || focus.trim().length < 2) return setMessage('Choose a gym and tell us what you want to train.');
@@ -117,6 +129,7 @@ export function WorkoutPlanner({ gyms, preferences, userId, workout, onBack, onO
       if (!result || result.gymId !== gymId) throw new Error('The workout response was incomplete. Please try again.');
       await AsyncStorage.setItem(planKey(auth.session.user.id, gymId), JSON.stringify(result));
       setPlan(result);
+      autoOpened.current = true; setView('plan');
       if (!reducedMotion) {
         reveal.stopAnimation(); reveal.setValue(0.7);
         Animated.timing(reveal, { toValue: 1, duration: 220, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
@@ -126,68 +139,153 @@ export function WorkoutPlanner({ gyms, preferences, userId, workout, onBack, onO
     setBusy(false);
   };
 
-  return <SafeAreaView edges={['top', 'left', 'right']} style={styles.safe}>
-    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
-    <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
-      <IconBack onPress={onBack} />
-      <PageHeader title="Today’s plan" />
-      <Text style={styles.copy}>Tell us what you’re training and how long you have. Your plan will use equipment at this gym.</Text>
+  const activePlan = plan?.gymId === gymId && Date.parse(plan.validUntil) > Date.now() ? plan : null;
+  const gym = gyms.find((item) => item.id === gymId);
+  const plannedSets = (item: DailyPlan) => item.pacing?.totalSets ?? item.exercises.reduce((total, exercise) => total + exercise.sets, 0);
 
-      <SectionTitle>Your gym</SectionTitle>
-      <View style={styles.chips}>{gyms.map((gym) => <Chip key={gym.id} label={gym.name} selected={gym.id === gymId} onPress={() => setGymId(gym.id)} />)}</View>
-      <Field label="What do you want to train?" placeholder="e.g. shoulders and back" value={focus} onChangeText={setFocus} maxLength={160} returnKeyType="done" />
-      <View style={styles.suggestions}>{FOCUS_SUGGESTIONS.map((example) => <Chip key={example} label={example} selected={focus.toLowerCase() === example.toLowerCase()} onPress={() => setFocus(example)} />)}</View>
-      <SectionTitle>Time available</SectionTitle>
-      <View style={styles.chips}>{TIME_OPTIONS.map((minutes) => <Chip key={minutes} label={`${minutes} min`} selected={duration === minutes} onPress={() => setDuration(minutes)} />)}</View>
-      <Text style={styles.timeHint}>Shorter plans cover the biggest priorities with fewer sets. You can always extend the workout.</Text>
-      <Button label={plan?.gymId === gymId ? 'Build a new plan' : 'Build my workout'} onPress={generate} loading={busy} disabled={!gymId || focus.trim().length < 2} />
-      {busy ? <Text style={styles.status} accessibilityLiveRegion="polite">Matching exercises to your gym…</Text> : null}
-      {message ? <Notice tone="danger">{message}</Notice> : null}
-      {plan?.gymId === gymId && Date.parse(plan.validUntil) > Date.now() ? <Animated.View style={[styles.plan, { opacity: reveal }]}>
-        <View style={styles.planHeader}><Text accessibilityRole="header" style={styles.planTitle}>Your {plan.focus} workout</Text><Text style={styles.planMeta}>{plan.gymName} · {plan.durationMinutes} min available</Text></View>
-        <View style={styles.summary}><Text style={styles.summaryNumber}>{plan.exercises.length}</Text><Text style={styles.summaryLabel}>exercises</Text><View style={styles.summaryDivider} /><Text style={styles.summaryNumber}>{plan.pacing?.totalSets ?? plan.exercises.reduce((total, item) => total + item.sets, 0)}</Text><Text style={styles.summaryLabel}>working sets</Text>{plan.pacing ? <><View style={styles.summaryDivider} /><Text style={styles.summaryNumber}>~{plan.pacing.estimatedMinutes}</Text><Text style={styles.summaryLabel}>min planned</Text></> : null}</View>
-        {plan.coverage ? <View style={styles.coverage}>
-          <Text style={styles.coverageTitle}>Today’s priorities · {plan.coverage.covered.length}/{plan.coverage.covered.length + (plan.coverage.deferred?.length || 0) + plan.coverage.missing.length} areas</Text>
-          <View style={styles.areaList}>{plan.coverage.covered.map((area) => <View key={area} style={styles.areaTag}><Ionicons name="checkmark" size={14} color={colors.lime} /><Text style={styles.areaTagText}>{area}</Text></View>)}</View>
-          {plan.coverage.deferred?.length ? <Text style={styles.deferred}>For a longer workout: {plan.coverage.deferred.join(' · ')}</Text> : null}
-          {plan.coverage.missing.length ? <Notice tone="danger">No matching equipment at this gym for: {plan.coverage.missing.join(', ')}.</Notice> : null}
-        </View> : null}
-        {plan.pacing ? <View style={styles.pacing}><Text style={styles.pacingTitle}>How to train today</Text><Text style={styles.pacingCopy}>{plan.pacing.emphasis}</Text><Text style={styles.pacingCopy}>{plan.pacing.recovery}</Text></View> : <Text style={styles.copy}>Suggested sets and reps are a starting point. Choose a comfortable load and adjust to your ability.</Text>}
+  if (view === 'plan' && activePlan) {
+    const plan = activePlan;
+    const done = plan.exercises.filter((item) => workout?.sets.some((set) => set.publicId === item.publicId && (set.exerciseSlug || '') === (item.exerciseSlug || ''))).length;
+    return <ScrollView contentContainerStyle={styles.screen}>
+      <IconBack onPress={() => setView('form')} />
+      <View style={styles.planHead}>
+        <Text style={styles.planMeta}>{plan.gymName} · {plan.durationMinutes} min</Text>
+        <Text accessibilityRole="header" style={styles.planTitle}>{plan.focus}</Text>
+      </View>
+      <Animated.View style={[styles.stats, { opacity: reveal }]}>
+        <Stat value={plan.exercises.length} label={plan.exercises.length === 1 ? 'exercise' : 'exercises'} />
+        <View style={styles.statDivider} />
+        <Stat value={plannedSets(plan)} label="working sets" />
+        <View style={styles.statDivider} />
+        <Stat value={plan.pacing ? `~${plan.pacing.estimatedMinutes}` : plan.durationMinutes} label="minutes" />
+      </Animated.View>
+
+      {plan.coverage?.covered.length ? <View style={styles.areaList}>{plan.coverage.covered.map((area) => <View key={area} style={styles.areaTag}><Ionicons name="checkmark" size={14} color={colors.lime} /><Text style={styles.areaTagText}>{area}</Text></View>)}</View> : null}
+      {plan.coverage?.deferred?.length ? <Text style={styles.deferred}>For a longer workout: {plan.coverage.deferred.join(' · ')}</Text> : null}
+      {plan.coverage?.missing.length ? <Notice tone="danger">No matching equipment at this gym for: {plan.coverage.missing.join(', ')}.</Notice> : null}
+
+      <View style={styles.listHead}><Text style={styles.sectionLabel}>Exercises</Text>{workout ? <Text style={styles.progress}>{done} of {plan.exercises.length} started</Text> : null}</View>
+      <View style={styles.exerciseList}>
         {plan.exercises.map((item, index) => {
           const logged = workout?.sets.filter((set) => set.publicId === item.publicId && (set.exerciseSlug || '') === (item.exerciseSlug || '')).length || 0;
-          return <Pressable key={`${item.publicId}:${item.exerciseSlug || ''}`} accessibilityRole="button" accessibilityLabel={`${item.name}, ${item.sets} working sets of ${item.reps} reps, station ${item.stationCode}`} onPress={() => onOpen(item.publicId, item.exerciseSlug || undefined)} style={styles.exercise}>
-            <View style={styles.index}><Text style={styles.indexText}>{index + 1}</Text></View>
-            <View style={styles.exerciseBody}><Text style={styles.exerciseName}>{item.name}</Text>{item.targetArea ? <Text style={styles.targetArea}>{item.targetArea}</Text> : null}<Text style={styles.exerciseMeta}>{item.sets} sets × {item.reps} reps · Station {item.stationCode}</Text>{logged > 0 ? <Text style={styles.logged}>{logged} set{logged === 1 ? '' : 's'} logged</Text> : null}</View>
-            <Ionicons name="chevron-forward" size={20} color={colors.muted} />
+          return <Pressable key={`${item.publicId}:${item.exerciseSlug || ''}`} accessibilityRole="button" accessibilityLabel={`${item.name}, ${item.sets} working sets of ${item.reps} reps, station ${item.stationCode}${logged ? `, ${logged} logged` : ''}`} onPress={() => onOpen(item.publicId, item.exerciseSlug || undefined)} style={({ pressed }) => [styles.exercise, index > 0 && styles.exerciseRule, pressed && styles.pressed]}>
+            <View style={[styles.index, logged > 0 && styles.indexDone]}>{logged > 0 ? <Ionicons name="checkmark" size={18} color={colors.onLime} /> : <Text style={styles.indexText}>{index + 1}</Text>}</View>
+            <View style={styles.exerciseBody}>
+              <Text style={styles.exerciseName}>{item.name}</Text>
+              <Text style={styles.exerciseMeta}>{item.sets} × {item.reps}{item.targetArea ? ` · ${item.targetArea}` : ''}</Text>
+              {logged > 0 ? <Text style={styles.logged}>{logged} set{logged === 1 ? '' : 's'} logged</Text> : null}
+            </View>
+            <View style={styles.station}><Text style={styles.stationLabel}>Station</Text><Text style={styles.stationCode}>{item.stationCode}</Text></View>
           </Pressable>;
         })}
-      </Animated.View> : null}
+      </View>
+
+      {plan.pacing ? <View style={styles.pacing}><Text style={styles.pacingTitle}>How to train today</Text><Text style={styles.pacingCopy}>{plan.pacing.emphasis}</Text><Text style={styles.pacingCopy}>{plan.pacing.recovery}</Text></View> : <Text style={styles.copy}>Suggested sets and reps are a starting point. Choose a comfortable load and adjust to your ability.</Text>}
+      <Button label="Build a different plan" tone="secondary" onPress={() => setView('form')} />
+      <Text style={styles.disclaimer}>Planning is general fitness guidance, not a medical or injury-rehabilitation program. Stop if an exercise causes pain.</Text>
+    </ScrollView>;
+  }
+
+  const custom = focus.trim().length > 0 && !FOCUS_OPTIONS.some((option) => option.label.toLowerCase() === focus.trim().toLowerCase());
+  return <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
+    <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
+      <View style={styles.headGroup}>
+        <PageHeader title="Plan" action={<BrandMark />} />
+        <Text style={styles.copy}>Pick a focus and your time. The plan only uses machines at {gyms.length > 1 ? 'your gym' : gym?.name || 'your gym'}.</Text>
+      </View>
+
+      {activePlan ? <Pressable accessibilityRole="button" accessibilityLabel={`Open today's ${activePlan.focus} plan`} onPress={() => setView('plan')} style={({ pressed }) => [styles.ready, pressed && styles.pressed]}>
+        <View style={styles.flex}>
+          <Text style={styles.readyLabel}>Today’s plan</Text>
+          <Text style={styles.readyTitle}>{activePlan.focus}</Text>
+          <Text style={styles.readyMeta}>{activePlan.exercises.length} exercises · {plannedSets(activePlan)} sets · {activePlan.durationMinutes} min</Text>
+        </View>
+        <View style={styles.readyGo}><Ionicons name="arrow-forward" size={20} color={colors.onLime} /></View>
+      </Pressable> : null}
+
+      {gyms.length > 1 ? <View style={styles.block}><Text style={styles.sectionLabel}>Gym</Text><View style={styles.chips}>{gyms.map((item) => <Chip key={item.id} label={item.name} selected={item.id === gymId} onPress={() => setGymId(item.id)} />)}</View></View> : null}
+
+      <View style={styles.block}>
+        <Text style={styles.sectionLabel}>What are you training?</Text>
+        <View style={styles.tiles}>{FOCUS_OPTIONS.map((option) => {
+          const selected = focus.trim().toLowerCase() === option.label.toLowerCase();
+          return <Pressable key={option.label} accessibilityRole="button" accessibilityState={{ selected }} onPress={() => { void Haptics.selectionAsync().catch(() => undefined); setFocus(option.label); }} style={({ pressed }) => [styles.tile, selected && styles.tileOn, pressed && styles.pressed]}>
+            <Ionicons name={option.icon} size={22} color={selected ? colors.lime : colors.muted} />
+            <Text style={[styles.tileText, selected && styles.tileTextOn]}>{option.label}</Text>
+          </Pressable>;
+        })}</View>
+        <Field label="Or describe it" placeholder="e.g. glutes and hamstrings" value={custom ? focus : ''} onChangeText={setFocus} maxLength={160} returnKeyType="done" />
+      </View>
+
+      <View style={styles.block}>
+        <View style={styles.listHead}><Text style={styles.sectionLabel}>How long do you have?</Text><Text style={styles.progress}>{duration} min</Text></View>
+        <View style={styles.segments} accessibilityRole="radiogroup">{TIME_OPTIONS.map((minutes) => {
+          const selected = duration === minutes;
+          return <Pressable key={minutes} accessibilityRole="radio" accessibilityLabel={`${minutes} minutes`} accessibilityState={{ selected }} onPress={() => { void Haptics.selectionAsync().catch(() => undefined); setDuration(minutes); }} style={[styles.segment, selected && styles.segmentOn]}>
+            <Text style={[styles.segmentText, selected && styles.segmentTextOn]}>{minutes}</Text>
+          </Pressable>;
+        })}</View>
+        <Text style={styles.timeHint}>Shorter plans cover the biggest priorities with fewer sets.</Text>
+      </View>
+
+      <Button label={activePlan ? 'Build a new plan' : 'Build my workout'} onPress={generate} loading={busy} disabled={!gymId || focus.trim().length < 2} />
+      {busy ? <Text style={styles.status} accessibilityLiveRegion="polite">Matching exercises to your gym…</Text> : null}
+      {message ? <Notice tone="danger">{message}</Notice> : null}
       <Text style={styles.disclaimer}>Planning is general fitness guidance, not a medical or injury-rehabilitation program. Stop if an exercise causes pain.</Text>
     </ScrollView>
-    </KeyboardAvoidingView>
-  </SafeAreaView>;
+  </KeyboardAvoidingView>;
+}
+
+function Stat({ value, label }: { value: string | number; label: string }) {
+  return <View style={styles.stat}><Text style={styles.statValue}>{value}</Text><Text style={styles.statLabel}>{label}</Text></View>;
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.forest }, flex: { flex: 1 }, screen: { width: '100%', maxWidth: 720, alignSelf: 'center', padding: 20, paddingBottom: 48, gap: 20 },
+  flex: { flex: 1 }, screen: { width: '100%', maxWidth: 720, alignSelf: 'center', padding: 20, paddingBottom: 48, gap: 22 },
+  headGroup: { gap: 6 },
   copy: { color: colors.muted, fontFamily: fonts.regular, fontSize: 15, lineHeight: 22 },
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, suggestions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: -10 },
-  timeHint: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13, lineHeight: 19, marginTop: -10 },
+  block: { gap: 12 },
+  sectionLabel: { color: colors.cream, fontFamily: fonts.semibold, fontSize: 16 },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  ready: { flexDirection: 'row', alignItems: 'center', gap: 14, borderRadius: 20, padding: 18, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.lime },
+  readyLabel: { color: colors.lime, fontFamily: fonts.semibold, fontSize: 13 },
+  readyTitle: { color: colors.cream, fontFamily: fonts.bold, fontSize: 22, letterSpacing: -0.4, marginTop: 2 },
+  readyMeta: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13, marginTop: 4 },
+  readyGo: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.lime, alignItems: 'center', justifyContent: 'center' },
+  tiles: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  tile: { flexBasis: '47%', flexGrow: 1, minHeight: 84, borderRadius: 16, padding: 14, gap: 10, justifyContent: 'space-between', backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
+  tileOn: { borderColor: colors.lime, backgroundColor: 'rgba(205,245,100,0.10)' },
+  tileText: { color: colors.cream, fontFamily: fonts.semibold, fontSize: 15 }, tileTextOn: { color: colors.lime },
+  segments: { flexDirection: 'row', padding: 4, gap: 4, borderRadius: 16, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
+  segment: { flex: 1, minHeight: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  segmentOn: { backgroundColor: colors.lime },
+  segmentText: { color: colors.muted, fontFamily: fonts.semibold, fontSize: 16 }, segmentTextOn: { color: colors.onLime },
+  timeHint: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13, lineHeight: 19 },
   status: { color: colors.lime, fontFamily: fonts.medium, fontSize: 13, textAlign: 'center' },
-  plan: { backgroundColor: colors.panel, borderColor: colors.border, borderWidth: 1, borderRadius: 18, padding: 16, gap: 14 },
-  planHeader: { gap: 5 }, planTitle: { color: colors.cream, fontFamily: fonts.bold, fontSize: 21 }, planMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: 12 },
-  summary: { flexDirection: 'row', alignItems: 'baseline', flexWrap: 'wrap', gap: 5, paddingVertical: 11, borderTopWidth: 1, borderBottomWidth: 1, borderColor: colors.border },
-  summaryNumber: { color: colors.lime, fontFamily: fonts.bold, fontSize: 20 }, summaryLabel: { color: colors.muted, fontFamily: fonts.regular, fontSize: 12, marginRight: 7 }, summaryDivider: { width: 1, height: 14, backgroundColor: colors.borderStrong, marginHorizontal: 2 },
-  coverage: { gap: 7, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 14 },
-  coverageTitle: { color: colors.cream, fontFamily: fonts.semibold, fontSize: 14 },
-  areaList: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
-  areaTag: { flexDirection: 'row', alignItems: 'center', gap: 5, borderRadius: 9, borderColor: colors.border, borderWidth: 1, paddingHorizontal: 9, paddingVertical: 6, backgroundColor: colors.bg },
-  areaTagText: { color: colors.muted, fontFamily: fonts.medium, fontSize: 11 },
-  deferred: { color: colors.muted, fontFamily: fonts.regular, fontSize: 12, lineHeight: 18 },
-  pacing: { backgroundColor: colors.bg, borderRadius: 12, padding: 14, gap: 7 }, pacingTitle: { color: colors.cream, fontFamily: fonts.semibold, fontSize: 15 }, pacingCopy: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13, lineHeight: 19 },
-  exercise: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 74, borderTopColor: colors.border, borderTopWidth: 1, paddingVertical: 12 },
-  index: { width: 34, height: 34, borderRadius: 11, backgroundColor: colors.lime, alignItems: 'center', justifyContent: 'center' }, indexText: { color: colors.onLime, fontFamily: fonts.bold, fontSize: 14 },
-  exerciseBody: { flex: 1, gap: 3 }, exerciseName: { color: colors.cream, fontFamily: fonts.semibold, fontSize: 16 }, exerciseMeta: { color: colors.muted, fontFamily: fonts.regular, fontSize: 12 },
-  targetArea: { color: colors.lime, fontFamily: fonts.medium, fontSize: 12 },
-  logged: { color: colors.mint, fontFamily: fonts.medium, fontSize: 11 }, disclaimer: { color: colors.dim, fontFamily: fonts.regular, fontSize: 12, lineHeight: 18 }
+  planHead: { gap: 4 },
+  planMeta: { color: colors.muted, fontFamily: fonts.medium, fontSize: 14 },
+  planTitle: { color: colors.cream, fontFamily: fonts.bold, fontSize: 34, letterSpacing: -1, lineHeight: 38 },
+  stats: { flexDirection: 'row', alignItems: 'center', borderRadius: 20, paddingVertical: 18, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
+  stat: { flex: 1, alignItems: 'center', gap: 4 }, statDivider: { width: 1, height: 34, backgroundColor: colors.border },
+  statValue: { color: colors.lime, fontFamily: fonts.bold, fontSize: 26, letterSpacing: -0.5 },
+  statLabel: { color: colors.muted, fontFamily: fonts.regular, fontSize: 12 },
+  areaList: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: -6 },
+  areaTag: { flexDirection: 'row', alignItems: 'center', gap: 5, borderRadius: 999, borderColor: colors.border, borderWidth: 1, paddingHorizontal: 11, paddingVertical: 7, backgroundColor: colors.panel },
+  areaTagText: { color: colors.cream, fontFamily: fonts.medium, fontSize: 12 },
+  deferred: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13, lineHeight: 19 },
+  listHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
+  progress: { color: colors.lime, fontFamily: fonts.semibold, fontSize: 14 },
+  exerciseList: { borderRadius: 20, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, marginTop: -8 },
+  exercise: { flexDirection: 'row', alignItems: 'center', gap: 13, minHeight: 76, paddingVertical: 14 },
+  exerciseRule: { borderTopWidth: 1, borderTopColor: colors.border },
+  index: { width: 34, height: 34, borderRadius: 17, borderWidth: 1.5, borderColor: colors.lime, alignItems: 'center', justifyContent: 'center' },
+  indexDone: { backgroundColor: colors.lime },
+  indexText: { color: colors.lime, fontFamily: fonts.bold, fontSize: 14 },
+  exerciseBody: { flex: 1, gap: 3 }, exerciseName: { color: colors.cream, fontFamily: fonts.semibold, fontSize: 16 }, exerciseMeta: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13 },
+  station: { alignItems: 'center', minWidth: 52, paddingVertical: 6, paddingHorizontal: 8, borderRadius: 12, backgroundColor: colors.panelRaised },
+  stationLabel: { color: colors.muted, fontFamily: fonts.regular, fontSize: 11 }, stationCode: { color: colors.cream, fontFamily: fonts.bold, fontSize: 16 },
+  logged: { color: colors.lime, fontFamily: fonts.medium, fontSize: 12 },
+  pacing: { backgroundColor: colors.panel, borderRadius: 16, padding: 16, gap: 8, borderWidth: 1, borderColor: colors.border }, pacingTitle: { color: colors.cream, fontFamily: fonts.semibold, fontSize: 15 }, pacingCopy: { color: colors.muted, fontFamily: fonts.regular, fontSize: 14, lineHeight: 20 },
+  pressed: { opacity: 0.75 },
+  disclaimer: { color: colors.dim, fontFamily: fonts.regular, fontSize: 12, lineHeight: 18 }
 });

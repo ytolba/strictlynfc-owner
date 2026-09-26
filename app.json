@@ -107,6 +107,15 @@
         }
       ],
       [
+        "expo-camera",
+        {
+          "cameraPermission": "StrictlyVision uses the camera only to scan the QR code on gym equipment, so you can open that machine without NFC.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
+        }
+      ],
+      [
         "expo-secure-store",
         {}
       ],
