@@ -21,6 +21,7 @@ import { colors, fonts } from './src/theme';
 import type { DashboardData, Machine, MachineDraft, OwnerRole, ProvisioningDraft } from './src/types';
 import { Button, Card, Chip, Field, Notice, SectionTitle } from './src/ui';
 import { MemberApp } from './src/member/MemberApp';
+import { StationTags } from './src/StationTags';
 import { deleteMemberAccount, machineLinkFromUrl } from './src/member/api';
 import { ensureMemberSession } from './src/member/session';
 import { clearMemberData } from './src/member/storage';
@@ -116,6 +117,8 @@ function OwnerApp({ session, onSwitchMember }: { session: Session; onSwitchMembe
   const [error, setError] = useState('');
   // Set when another tab asks Set up to open straight into a custom machine.
   const [customRequest, setCustomRequest] = useState(0);
+  // The machine whose NFC sticker or QR code is being programmed, from anywhere in owner tools.
+  const [tagMachine, setTagMachine] = useState<Machine | null>(null);
 
   const refresh = async (gymId = activeGymId, pull = false) => {
     pull ? setRefreshing(true) : setLoading(true);
@@ -138,15 +141,16 @@ function OwnerApp({ session, onSwitchMember }: { session: Session; onSwitchMembe
   const body = tab === 'dashboard'
     ? <DashboardScreen data={data} refreshing={refreshing} onRefresh={() => refresh(activeGymId, true)} onStartSetup={() => setTab('setup')} />
     : tab === 'machines'
-      ? <MachinesScreen session={session} data={data} onChanged={() => refresh(activeGymId, true)} onProgram={() => setTab('setup')} onCustom={createCustom} />
+      ? <MachinesScreen session={session} data={data} onChanged={() => refresh(activeGymId, true)} onProgram={() => setTab('setup')} onCustom={createCustom} onTags={setTagMachine} />
       : tab === 'setup'
-        ? <SetupScreen session={session} data={data} customRequest={customRequest} onChanged={() => refresh(activeGymId, true)} />
+        ? <SetupScreen session={session} data={data} customRequest={customRequest} onChanged={() => refresh(activeGymId, true)} onTags={setTagMachine} />
         : <AccountScreen session={session} data={data} onGymChange={(id) => { setActiveGymId(id); refresh(id); }} onSwitchMember={onSwitchMember} />;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.app}>{body}</KeyboardAvoidingView>
       <AppTabBar tabs={OWNER_TABS} tab={tab} onChange={setTab} />
+      <StationTags session={session} gymId={data.gym.id} machine={tagMachine} visible={!!tagMachine} onClose={() => setTagMachine(null)} onChanged={() => refresh(activeGymId, true)} />
     </SafeAreaView>
   );
 }
@@ -224,7 +228,7 @@ function DashboardScreen({ data, refreshing, onRefresh, onStartSetup }: { data: 
   );
 }
 
-function MachinesScreen({ session, data, onChanged, onProgram, onCustom }: { session: Session; data: DashboardData; onChanged: () => void; onProgram: () => void; onCustom: () => void }) {
+function MachinesScreen({ session, data, onChanged, onProgram, onCustom, onTags }: { session: Session; data: DashboardData; onChanged: () => void; onProgram: () => void; onCustom: () => void; onTags: (machine: Machine) => void }) {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Machine | null>(null);
   const [draft, setDraft] = useState<MachineDraft>(blankDraft());
@@ -295,7 +299,7 @@ function MachinesScreen({ session, data, onChanged, onProgram, onCustom }: { ses
       <Button label={selected.videoUrl ? 'Replace demo video' : 'Upload demo video'} onPress={upload} tone="secondary" disabled={busy} />
       <SectionTitle>Installed tags</SectionTitle>
       {selected.tags.length ? <List>{selected.tags.map((tag) => <ListRow key={tag.publicId} icon="radio-outline" title={tag.labelCode} meta={`${tag.type.toUpperCase()} · ${tag.status}`} trailing={<Ionicons name={tag.status === 'active' ? 'checkmark-circle' : 'ellipse-outline'} size={22} color={tag.status === 'active' ? colors.lime : colors.muted} />} />)}</List> : <EmptyRow icon="radio-outline" title="No tag yet" copy="Program a sticker so members can open this machine." />}
-      <Button label="Program or replace tag" onPress={onProgram} tone="secondary" />
+      <Button label="Program NFC sticker or QR code" onPress={() => onTags(selected)} tone="secondary" />
       <Button label="Delete machine" onPress={confirmDelete} tone="danger" disabled={busy} />
     </ScrollView>
   );
@@ -306,7 +310,7 @@ function MachinesScreen({ session, data, onChanged, onProgram, onCustom }: { ses
       <Field label="Search your floor" value={query} onChangeText={setQuery} placeholder="Name, station, or category" />
       {message ? <Notice tone="danger">{message}</Notice> : null}
       {busy ? <ActivityIndicator color={colors.lime} />
-        : visible.length ? <List>{visible.map((machine) => <ListRow key={machine.id} badge={machine.stationCode} title={machine.name} meta={`${machine.category} · ${machine.taps30Days} taps / 30d`} onPress={() => openMachine(machine)} trailing={<View style={styles.rowTrail}><View style={[styles.statusDot, machine.tags.some((tag) => tag.status === 'active') && styles.statusDotActive]} /><Ionicons name="chevron-forward" size={18} color={colors.muted} /></View>} />)}</List>
+        : visible.length ? <List>{visible.map((machine) => <ListRow key={machine.id} badge={machine.stationCode} title={machine.name} meta={`${machine.category} · ${machine.taps30Days} taps / 30d`} onPress={() => openMachine(machine)} trailing={<View style={styles.rowTrail}><View style={[styles.statusDot, machine.tags.some((tag) => tag.status === 'active') && styles.statusDotActive]} /><Pressable accessibilityRole="button" accessibilityLabel={`Program NFC or QR for ${machine.name}`} hitSlop={6} onPress={() => onTags(machine)} style={({ pressed }) => [styles.tagButton, pressed && { opacity: 0.7 }]}><Ionicons name="qr-code-outline" size={19} color={colors.lime} /></Pressable><Ionicons name="chevron-forward" size={18} color={colors.muted} /></View>} />)}</List>
           : <EmptyRow icon="barbell-outline" title={data.machines.length ? 'No matches' : 'No equipment yet'} copy={data.machines.length ? 'Try a different name, station, or category.' : 'Add equipment from the catalog or create a custom machine.'} />}
       <Button label="Add from catalog" onPress={onProgram} />
       <Button label="Create custom machine" onPress={onCustom} tone="secondary" />
@@ -314,7 +318,7 @@ function MachinesScreen({ session, data, onChanged, onProgram, onCustom }: { ses
   );
 }
 
-function SetupScreen({ session, data, customRequest, onChanged }: { session: Session; data: DashboardData; customRequest: number; onChanged: () => void }) {
+function SetupScreen({ session, data, customRequest, onChanged, onTags }: { session: Session; data: DashboardData; customRequest: number; onChanged: () => void; onTags: (machine: Machine) => void }) {
   const [stage, setStage] = useState<'choose' | 'details' | 'write' | 'verify' | 'success'>('choose');
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState<MachineDraft>(blankDraft());
@@ -426,6 +430,7 @@ function SetupScreen({ session, data, customRequest, onChanged }: { session: Ses
       <View style={styles.gap10}><Text style={[styles.kicker, styles.center]}>READY FOR THE FLOOR</Text><Text style={styles.successTitle}>{provisioning.machineName} is live.</Text><Text style={styles.centerCopy}>Place the sticker where a member can comfortably tap a phone before their set.</Text></View>
       <View style={[styles.panel, styles.metrics]}><Metric value={draft.stationCode} label="station" /><Metric value="NTAG215" label="tag" /><Metric value="Verified" label="status" /></View>
       <Button label="Open member page" onPress={() => Linking.openURL(provisioning.url)} />
+      {(() => { const live = data.machines.find((machine) => machine.id === provisioning.machineId); return live ? <Button label="Get the QR code too" onPress={() => onTags(live)} tone="secondary" /> : null; })()}
       <Button label="Set up another tag" onPress={restart} tone="secondary" />
     </ScrollView>
   );
@@ -508,7 +513,7 @@ const styles = StyleSheet.create({
   heroNumber: { color: colors.lime, fontFamily: fonts.bold, fontSize: 56, lineHeight: 62, letterSpacing: -1.7, fontVariant: ['tabular-nums'] },
   metrics: { flexDirection: 'row', borderTopWidth: 1, borderColor: colors.border, paddingTop: 16 }, metric: { flex: 1, gap: 3 }, metricValue: { color: colors.text, fontSize: 21, fontFamily: fonts.bold }, metricLabel: { fontFamily: fonts.regular, color: colors.muted, fontSize: 10, textTransform: 'uppercase', letterSpacing: .7 },
   chart: { height: 168, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: 7 }, barColumn: { flex: 1, alignItems: 'center', justifyContent: 'flex-end', gap: 6 }, bar: { width: '72%', maxWidth: 28, borderRadius: 7, backgroundColor: colors.lime }, barValue: { color: colors.text, fontSize: 10, fontFamily: fonts.bold }, barLabel: { fontFamily: fonts.regular, color: colors.muted, fontSize: 11 },
-  rowValue: { color: colors.text, fontSize: 15, fontFamily: fonts.semibold }, rowMetaInline: { fontFamily: fonts.regular, color: colors.muted, fontSize: 12 }, rowTrail: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  rowValue: { color: colors.text, fontSize: 15, fontFamily: fonts.semibold }, rowMetaInline: { fontFamily: fonts.regular, color: colors.muted, fontSize: 12 }, rowTrail: { flexDirection: 'row', alignItems: 'center', gap: 10 }, tagButton: { width: 40, height: 40, borderRadius: 12, backgroundColor: colors.panelRaised, alignItems: 'center', justifyContent: 'center' },
   statusDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: colors.danger }, statusDotActive: { backgroundColor: colors.lime },
   nfcPanel: { borderWidth: 1, borderColor: colors.border }, rings: { alignSelf: 'center', width: 136, height: 136, borderRadius: 68, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, ringsInner: { width: 94, height: 94, borderRadius: 47, borderWidth: 1, borderColor: colors.lime, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center' },
   nfcTitle: { color: colors.text, fontSize: 26, fontFamily: fonts.bold, textAlign: 'center', letterSpacing: -0.8 }, nfcStation: { color: colors.lime, fontSize: 11, fontFamily: fonts.bold, letterSpacing: 1.2, textAlign: 'center' }, urlBox: { backgroundColor: colors.surface, padding: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.border }, urlText: { fontFamily: fonts.regular, color: colors.text, textAlign: 'center', fontSize: 13 },
